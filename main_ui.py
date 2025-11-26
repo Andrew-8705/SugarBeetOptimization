@@ -434,6 +434,7 @@ class FinalApp(ctk.CTk):
         self.canvas_bar = FigureCanvasTkAgg(fig2, master=self.frame_bar)
         self.canvas_bar.draw(); self.canvas_bar.get_tk_widget().pack(fill="both", expand=True)
 
+
 if __name__ == "__main__":
     app = FinalApp()
     app.mainloop()

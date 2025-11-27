@@ -2,7 +2,8 @@ import customtkinter as ctk
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+# --- Добавлен импорт NavigationToolbar2Tk ---
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 
 # =============================================================================
@@ -11,7 +12,6 @@ from matplotlib.figure import Figure
 
 class SugarBeetModel:
     def __init__(self):
-        # Дефолтные параметры
         self.n = 15
         self.nu = 7
         self.use_ripening = True
@@ -28,7 +28,6 @@ class SugarBeetModel:
             'K': (4.8, 7.05), 'Na': (0.21, 0.82), 'N': (1.58, 2.80), 'I0': (0.62, 0.64)
         }
 
-    # --- Генерация ---
     def _get_beta(self, stage_idx, row_idx, row_centers):
         limit = self.nu if self.use_ripening else 0
         bounds = self.ranges['beta_ripen'] if stage_idx < limit else self.ranges['beta_wither']
@@ -70,18 +69,13 @@ class SugarBeetModel:
                 S[i, j] = max(0, C[i, j] - loss_val)
         self.matrix_s = S
 
-    # --- Ручной ввод ---
     def set_manual_matrix(self, matrix, manual_nu):
         self.matrix_s = np.array(matrix)
         self.n = self.matrix_s.shape[0]
         self.nu = manual_nu
-        # Для ручного режима CTG (BetaSort) не имеет данных о деградации,
-        # поэтому заполняем заглушкой, чтобы стратегия работала (как рандом)
-        self.matrix_beta_avg = np.random.uniform(0.9, 0.95, self.n)
+        self.matrix_beta_avg = np.random.uniform(0.9, 0.98, self.n)
 
-    # --- Стратегии ---
     def solve_hungarian(self):
-        # Венгерский алгоритм (Идеал)
         row_ind, col_ind = linear_sum_assignment(-self.matrix_s)
         total = self.matrix_s[row_ind, col_ind].sum()
         schedule = sorted(zip(col_ind, row_ind), key=lambda x: x[0])
@@ -92,7 +86,6 @@ class SugarBeetModel:
     def logic_thrifty(self, day, available): return min(available, key=lambda i: self.matrix_s[i, day])
     
     def logic_tg(self, day, available):
-        # Используем self.nu для переключения
         return self.logic_thrifty(day, available) if day < (self.nu - 1) else self.logic_greedy(day, available)
     
     def logic_gt(self, day, available):
@@ -100,6 +93,29 @@ class SugarBeetModel:
     
     def logic_ctg(self, day, available):
         return min(available, key=lambda i: self.matrix_beta_avg[i])
+    
+    def logic_critical(self, day, available):
+        return max(available, key=lambda i: self.matrix_s[i, day] / self.matrix_beta_avg[i])
+
+    def logic_mean_std(self, day, available):
+        vals = [self.matrix_s[i, day] for i in available]
+        mu = np.mean(vals)
+        sigma = np.std(vals)
+        threshold = mu + 0.5 * sigma
+        candidates = [i for i in available if self.matrix_s[i, day] >= threshold]
+        if candidates:
+            return max(candidates, key=lambda i: self.matrix_s[i, day])
+        else:
+            return self.logic_greedy(day, available)
+
+    def logic_classification(self, day, available):
+        progress = day / self.n
+        if progress < 0.3:
+            return self.logic_thrifty(day, available)
+        elif progress < 0.7:
+            return self.logic_ctg(day, available)
+        else:
+            return self.logic_greedy(day, available)
         
     def run_simulation(self, runs=50, manual_mode=False):
         strategies = {
@@ -107,7 +123,10 @@ class SugarBeetModel:
             'Thrifty': self.logic_thrifty,
             'Thrifty->Greedy': self.logic_tg,
             'Greedy->Thrifty': self.logic_gt,
-            'CTG (Beta)': self.logic_ctg
+            'CTG (BetaSort)': self.logic_ctg,
+            'Critical Ratio': self.logic_critical,
+            'Mean+StdDev': self.logic_mean_std,
+            'Classification': self.logic_classification
         }
         
         stats = {k: {'totals': [], 'dynamics_sum': np.zeros(self.n)} for k in strategies}
@@ -119,12 +138,10 @@ class SugarBeetModel:
             if not manual_mode:
                 self.generate_matrix()
             
-            # Расчет идеала
             id_sum, id_dyn = self.solve_hungarian()
             stats['Ideal']['totals'].append(id_sum)
             stats['Ideal']['dynamics_sum'] += np.array(id_dyn)
             
-            # Расчет стратегий
             for name, func in strategies.items():
                 available = set(range(self.n))
                 daily = []
@@ -141,34 +158,48 @@ class SugarBeetModel:
         return stats, effective_runs
 
 # =============================================================================
-# 2. UI: ПАНЕЛИ НАСТРОЕК
+# 2. UI: ОКНА И ПАНЕЛИ
 # =============================================================================
 
+class StrategyHelpWindow(ctk.CTkToplevel):
+    def __init__(self, master):
+        super().__init__(master)
+        self.title("Справочник стратегий")
+        self.geometry("600x500")
+        self.resizable(False, False)
+        ctk.CTkLabel(self, text="Описание алгоритмов", font=("Arial", 20, "bold")).pack(pady=10)
+        textbox = ctk.CTkTextbox(self, width=550, height=400, font=("Arial", 14), wrap="word")
+        textbox.pack(padx=20, pady=10)
+        info_text = (
+            "1. Greedy (Жадная)\nНа каждом шаге выбирает партию с максимальным текущим содержанием сахара.\n\n"
+            "2. Thrifty (Бережливая)\nВыбирает партию с минимальным содержанием сахара, оставляя лучшие 'на потом'.\n\n"
+            "3. Thrifty -> Greedy\nДо дня N (nu) работает как Бережливая, затем переключается на Жадную.\n\n"
+            "4. CTG (BetaSort)\nПриоритет отдается партиям с худшим коэффициентом лежкости.\n\n"
+            "5. Critical Ratio (Критическая деградация)\nВыбирает партию с максимальным отношением Сахар / Коэф.Деградации.\n\n"
+            "6. Mean + StdDev (Выбор лучших)\nРассматривает только те партии, сахар в которых выше 'Среднего + 0.5 Std'.\n\n"
+            "7. Classification (Группировка)\nГибрид: первые 30% — Бережливая, середина — CTG, концовка — Жадная."
+        )
+        textbox.insert("0.0", info_text)
+        textbox.configure(state="disabled")
+
 class AutoSettingsFrame(ctk.CTkScrollableFrame):
-    """Настройки для автоматической генерации"""
     def __init__(self, master, model, **kwargs):
         super().__init__(master, **kwargs)
         self.entries = {}
-        
         self.add_section("1. Размерность")
         self.add_input("N (Кол-во партий)", "n", str(model.n))
         self.add_input("Число прогонов", "runs", "50")
-        
         self.add_section("2. Логика модели")
         self.add_input("Nu (День перекл.)", "nu", str(model.nu))
-        
         self.sw_rip = ctk.CTkSwitch(self, text="Дозаривание")
         if model.use_ripening: self.sw_rip.select()
         self.sw_rip.pack(anchor="w", padx=10, pady=5)
-        
         self.sw_chem = ctk.CTkSwitch(self, text="Учет химии")
         if model.use_chemistry: self.sw_chem.select()
         self.sw_chem.pack(anchor="w", padx=10, pady=5)
-        
         self.sw_dist = ctk.CTkSwitch(self, text="Конц. распределение")
         if model.distribution_type == 'concentrated': self.sw_dist.select()
         self.sw_dist.pack(anchor="w", padx=10, pady=5)
-
         self.add_section("3. Диапазоны параметров")
         self.add_range_input("Сахар (нач.)", "a", model.ranges['a'])
         self.add_range_input("Увядание (beta<1)", "beta_wither", model.ranges['beta_wither'])
@@ -192,7 +223,6 @@ class AutoSettingsFrame(ctk.CTkScrollableFrame):
         e1 = ctk.CTkEntry(f, width=45); e1.insert(0, str(default_tuple[0])); e1.pack(side="right", padx=2)
         e2 = ctk.CTkEntry(f, width=45); e2.insert(0, str(default_tuple[1])); e2.pack(side="right", padx=2)
         self.entries[key] = (e1, e2)
-        
     def get_params(self):
         vals = {
             'n': int(self.entries['n'].get()),
@@ -209,39 +239,27 @@ class AutoSettingsFrame(ctk.CTkScrollableFrame):
         return vals
 
 class ManualSettingsFrame(ctk.CTkFrame):
-    """Настройки для ручного ввода"""
-    def __init__(self, master, **kwargs):
+     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
-        
-        # 1. Поле для матрицы
         ctk.CTkLabel(self, text="Матрица выхода S (строки через Enter):", font=("Arial", 12, "bold")).pack(anchor="w", pady=(10, 5))
         ctk.CTkLabel(self, text="Пример: 15.5 14.0\n        14.0 13.0", font=("Consolas", 10), text_color="gray").pack(anchor="w")
-        
         self.textbox = ctk.CTkTextbox(self, font=("Consolas", 12), height=200)
         self.textbox.pack(fill="x", pady=5)
         self.textbox.insert("0.0", "15.5 14.8 13.0\n14.0 13.5 12.0\n16.2 15.5 14.0")
-
-        # 2. Настройка Nu (обязательна для логики стратегий)
         sep = ctk.CTkFrame(self, height=2, fg_color="gray")
         sep.pack(fill="x", pady=15)
-        
         ctk.CTkLabel(self, text="Параметры обработки:", font=("Arial", 12, "bold")).pack(anchor="w")
-        
         f_nu = ctk.CTkFrame(self, fg_color="transparent")
         f_nu.pack(fill="x", pady=5)
         ctk.CTkLabel(f_nu, text="Nu (День смены стратегии):").pack(side="left")
         self.entry_nu = ctk.CTkEntry(f_nu, width=60)
         self.entry_nu.insert(0, "2")
         self.entry_nu.pack(side="right")
-        
-        ctk.CTkLabel(self, text="* Остальные параметры (химия, диапазоны)\nпри ручном вводе не применяются,\nт.к. вы вводите уже финальный выход.", 
-                     font=("Arial", 11), text_color="#e07a5f").pack(pady=10)
-
-    def get_data(self):
+        ctk.CTkLabel(self, text="* Остальные параметры (химия, диапазоны)\nпри ручном вводе не применяются,\nт.к. вы вводите уже финальный выход.", font=("Arial", 11), text_color="#e07a5f").pack(pady=10)
+     def get_data(self):
         text = self.textbox.get("0.0", "end").strip()
         if not text: return None, None
         try:
-            # Парсинг матрицы
             rows = text.split('\n')
             matrix = []
             for r in rows:
@@ -274,11 +292,15 @@ ctk.set_default_color_theme("dark-blue")
 class FinalApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Sugar Beet Optimization DSS")
-        self.geometry("1400x850")
+        self.title("Sugar Beet Optimization DSS v2.0")
+        self.geometry("1400x900") # Немного увеличил высоту
         
         self.model = SugarBeetModel()
         
+        # --- Хранилище для данных последнего расчета ---
+        self.last_stats = None
+        self.last_runs = 0
+
         self.grid_columnconfigure(0, weight=0, minsize=350)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -287,24 +309,23 @@ class FinalApp(ctk.CTk):
         self.left_frame = ctk.CTkFrame(self, corner_radius=0)
         self.left_frame.grid(row=0, column=0, sticky="nsew")
         
-        ctk.CTkLabel(self.left_frame, text="ИСТОЧНИК ДАННЫХ", font=("Arial", 20, "bold")).pack(pady=(20, 10))
+        self.header_frame = ctk.CTkFrame(self.left_frame, fg_color="transparent")
+        self.header_frame.pack(fill="x", padx=10, pady=(20, 10))
+        ctk.CTkLabel(self.header_frame, text="ДАННЫЕ", font=("Arial", 20, "bold")).pack(side="left", padx=10)
+        self.btn_help = ctk.CTkButton(self.header_frame, text="?", width=30, height=30, 
+                                      fg_color="#3a7ebf", font=("Arial", 14, "bold"),
+                                      command=self.open_help)
+        self.btn_help.pack(side="right", padx=10)
         
-        # Вкладки (Tabs) для выбора режима
         self.tab_selector = ctk.CTkTabview(self.left_frame)
         self.tab_selector.pack(expand=True, fill="both", padx=10, pady=(0, 10))
-        
         self.tab_auto = self.tab_selector.add("Авто-Генерация")
         self.tab_manual = self.tab_selector.add("Ручной Ввод")
-        
-        # 1. Содержимое вкладки Авто
         self.auto_config = AutoSettingsFrame(self.tab_auto, self.model)
         self.auto_config.pack(expand=True, fill="both")
-        
-        # 2. Содержимое вкладки Ручной
         self.manual_config = ManualSettingsFrame(self.tab_manual)
-        self.manual_config.pack(expand=True, fill="both")
+        self.manual_config.pack(expand=True, fill="both", padx=5, pady=5)
         
-        # Кнопка Запуска
         self.btn_run = ctk.CTkButton(self.left_frame, text="ЗАПУСТИТЬ РАСЧЕТ", 
                                      height=50, fg_color="green", font=("Arial", 14, "bold"),
                                      command=self.run_process)
@@ -314,7 +335,8 @@ class FinalApp(ctk.CTk):
         self.right_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.right_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
         self.right_frame.grid_columnconfigure((0, 1, 2), weight=1)
-        self.right_frame.grid_rowconfigure(1, weight=1)
+        # Ряды: 0-KPI, 1-Slider, 2-Graph, 3-Rec
+        self.right_frame.grid_rowconfigure(2, weight=1)
 
         # KPI
         self.card_ideal = InfoCard(self.right_frame, "Max Possible Yield", "---", color="#2ec4b6")
@@ -324,9 +346,20 @@ class FinalApp(ctk.CTk):
         self.card_loss = InfoCard(self.right_frame, "Min Loss", "--- %", color="#e9c46a")
         self.card_loss.grid(row=0, column=2, sticky="ew", padx=5, pady=(0, 10))
 
+        # --- Панель управления графиками (Слайдер) ---
+        self.ctrl_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
+        self.ctrl_frame.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+        
+        self.lbl_slider = ctk.CTkLabel(self.ctrl_frame, text="Топ стратегий: 5", font=("Arial", 12))
+        self.lbl_slider.pack(side="left", padx=(10, 10))
+        
+        self.slider_strat = ctk.CTkSlider(self.ctrl_frame, from_=2, to=8, number_of_steps=6, width=200, command=self.update_graph_view)
+        self.slider_strat.set(5)
+        self.slider_strat.pack(side="left", padx=10)
+
         # Графики
         self.tabs_graph = ctk.CTkTabview(self.right_frame)
-        self.tabs_graph.grid(row=1, column=0, columnspan=3, sticky="nsew")
+        self.tabs_graph.grid(row=2, column=0, columnspan=3, sticky="nsew")
         self.tabs_graph.add("Динамика")
         self.tabs_graph.add("Итоги")
         
@@ -334,46 +367,59 @@ class FinalApp(ctk.CTk):
         self.frame_line.pack(fill="both", expand=True)
         self.frame_bar = ctk.CTkFrame(self.tabs_graph.tab("Итоги"), fg_color="transparent")
         self.frame_bar.pack(fill="both", expand=True)
-        self.canvas_line = None; self.canvas_bar = None
+        
+        # Canvas и Toolbars
+        self.canvas_line = None
+        self.canvas_bar = None
+        self.toolbar_line = None
+        self.toolbar_bar = None
 
         # Рекомендация
-        self.rec_frame = ctk.CTkFrame(self.right_frame, fg_color="#2b2b2b")
-        self.rec_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(15, 0))
-        self.lbl_rec = ctk.CTkLabel(self.rec_frame, text="Выберите режим и запустите расчет...", font=("Consolas", 13), justify="left", wraplength=900)
-        self.lbl_rec.pack(anchor="w", padx=20, pady=15)
+        self.rec_frame = ctk.CTkFrame(self.right_frame, fg_color="#2b2b2b", border_width=1, border_color="#555")
+        self.rec_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(15, 0))
+        
+        ctk.CTkLabel(self.rec_frame, text="РЕКОМЕНДАЦИЯ СППР", font=("Arial", 14, "bold"), text_color="#3a7ebf").pack(anchor="w", padx=20, pady=(10, 0))
+        self.lbl_rec = ctk.CTkLabel(self.rec_frame, text="Задайте параметры и запустите расчет...", font=("Consolas", 13), justify="left", wraplength=900)
+        self.lbl_rec.pack(anchor="w", padx=20, pady=(5, 15))
+
+    def open_help(self):
+        StrategyHelpWindow(self)
+
+    # --- Обработчик слайдера ---
+    def update_graph_view(self, value):
+        val = int(value)
+        self.lbl_slider.configure(text=f"Топ стратегий: {val}")
+        if self.last_stats is not None:
+            # Перерисовываем графики, используя сохраненные данные, без пересчета
+            self.draw_graphs(self.last_stats, self.last_runs)
 
     def run_process(self):
         try:
             self.btn_run.configure(text="Вычисление...", state="disabled")
             self.update()
             
-            # Проверяем, какая вкладка активна
             active_tab = self.tab_selector.get()
             manual_mode = (active_tab == "Ручной Ввод")
-            
             runs = 50
             
             if manual_mode:
-                # Получаем данные из вкладки Manual
                 matrix, manual_nu = self.manual_config.get_data()
-                if matrix is None: raise ValueError("Ошибка данных матрицы")
-                
+                if matrix is None: raise ValueError("Матрица пуста!")
                 self.model.set_manual_matrix(matrix, manual_nu)
             else:
-                # Получаем данные из вкладки Auto
                 p = self.auto_config.get_params()
-                self.model.n = p['n']
-                self.model.nu = p['nu']
-                self.model.use_ripening = p['use_ripening']
-                self.model.use_chemistry = p['use_chemistry']
-                self.model.distribution_type = p['distribution']
-                self.model.ranges = p['ranges']
+                self.model.n = p['n']; self.model.nu = p['nu']
+                self.model.use_ripening = p['use_ripening']; self.model.use_chemistry = p['use_chemistry']
+                self.model.distribution_type = p['distribution']; self.model.ranges = p['ranges']
                 runs = p['runs']
 
-            # Запуск модели
             stats, effective_runs = self.model.run_simulation(runs=runs, manual_mode=manual_mode)
             
-            # Анализ результатов
+            # --- Сохранение данных для интерактивности ---
+            self.last_stats = stats
+            self.last_runs = effective_runs
+
+            # Анализ
             avg_ideal = np.mean(stats['Ideal']['totals'])
             results = []
             for name in stats:
@@ -382,58 +428,103 @@ class FinalApp(ctk.CTk):
                 loss = (1 - val/avg_ideal) * 100 if avg_ideal != 0 else 0
                 results.append((name, val, loss))
             results.sort(key=lambda x: x[2])
-            
             best = results[0]
+            
             self.card_ideal.update_value(f"{avg_ideal:.2f}")
             self.card_best.update_value(best[0])
             self.card_loss.update_value(f"{best[2]:.2f}%")
             
-            rec_text = f"РЕЖИМ: {active_tab.upper()}\n"
-            rec_text += f"Лучшая стратегия: {best[0]} (Выход {best[1]:.2f}, Потери {best[2]:.2f}%).\n"
-            if manual_mode: rec_text += "В ручном режиме диапазоны сахара и химии игнорируются, используется введенная матрица."
-            
-            self.lbl_rec.configure(text=rec_text)
+            self.update_recommendation(best[0], best[2], manual_mode)
             self.draw_graphs(stats, effective_runs)
             
         except Exception as e:
             self.lbl_rec.configure(text=f"ОШИБКА: {e}")
-            import traceback
-            traceback.print_exc()
+            import traceback; traceback.print_exc()
         finally:
             self.btn_run.configure(text="ЗАПУСТИТЬ РАСЧЕТ", state="normal")
 
+    def update_recommendation(self, name, loss, manual_mode):
+        text = f"Победитель: {name} (Потери {loss:.2f}%).\n\n"
+        advice = ""
+        if "Critical" in name:
+            advice = "СОВЕТ: В текущих условиях некоторые партии с высоким сахаром портятся слишком быстро. Игнорируйте общую очередь и спасайте их в первую очередь."
+        elif "Mean+StdDev" in name:
+            advice = "СОВЕТ: Высокая вариативность качества сырья. Откажитесь от переработки 'середнячков', фокусируйтесь только на партиях, значительно превышающих средний уровень."
+        elif "Classification" in name:
+            advice = "СОВЕТ: Используйте комбинированный подход. Начало сезона - чистка склада (Бережливая), середина - сортировка по лежкости (CTG), конец - жадный сбор."
+        elif "Thrifty->Greedy" in name:
+            advice = f"СОВЕТ: Выраженный эффект дозаривания. Первые {self.model.nu} дней используйте 'Бережливую' тактику, затем резко переходите на 'Жадную'."
+        elif "Greedy" in name:
+            advice = "СОВЕТ: Сильное увядание или отсутствие дозаривания. Не ждите - перерабатывайте самое сладкое сырье немедленно."
+        elif "CTG" in name:
+            advice = "СОВЕТ: Ключевой фактор - лежкость. В первую очередь перерабатывайте партии, которые гниют быстрее всего."
+        else:
+            advice = f"СОВЕТ: Следуйте стратегии {name}."
+
+        if manual_mode:
+            advice += "\n(Примечание: Анализ выполнен для единственной введенной матрицы)."
+        self.lbl_rec.configure(text=text + advice)
+
     def draw_graphs(self, stats, runs):
-        # 1. Линейный график
-        if self.canvas_line: self.canvas_line.get_tk_widget().destroy()
+        # --- Читаем значение слайдера ---
+        top_n = int(self.slider_strat.get())
+
+        # Очистка Canvas и Toolbars
+        if self.canvas_line: 
+            self.canvas_line.get_tk_widget().destroy()
+        if self.toolbar_line:
+            self.toolbar_line.destroy()
+            
+        if self.canvas_bar: 
+            self.canvas_bar.get_tk_widget().destroy()
+        if self.toolbar_bar:
+            self.toolbar_bar.destroy()
+
+        # 1. Line Chart
         fig1 = Figure(figsize=(6, 4), dpi=100)
         fig1.patch.set_facecolor('#2b2b2b'); ax1 = fig1.add_subplot(111); ax1.set_facecolor('#2b2b2b')
         days = range(1, self.model.n + 1)
         
-        ax1.plot(days, np.cumsum(stats['Ideal']['dynamics_sum']/runs), 'w--', label='Ideal')
-        colors = ['#e76f51', '#2a9d8f', '#e9c46a', '#f4a261']
-        for i, name in enumerate([k for k in stats if k!='Ideal']):
-            ax1.plot(days, np.cumsum(stats[name]['dynamics_sum']/runs), color=colors[i%4], label=name)
+        ax1.plot(days, np.cumsum(stats['Ideal']['dynamics_sum']/runs), 'w--', label='Ideal', alpha=0.5)
         
+        # Сортировка и выбор топ-N стратегий
+        sorted_keys = sorted([k for k in stats if k!='Ideal'], key=lambda k: np.mean(stats[k]['totals']), reverse=True)
+        top_keys = sorted_keys[:top_n]
+        
+        colors = ['#e76f51', '#2a9d8f', '#e9c46a', '#f4a261', '#81b29a', '#f1faee', '#a8dadc', '#457b9d']
+        for i, name in enumerate(top_keys):
+            col = colors[i % len(colors)]
+            ax1.plot(days, np.cumsum(stats[name]['dynamics_sum']/runs), color=col, label=name, linewidth=2)
+            
         ax1.grid(True, linestyle='--', alpha=0.3); ax1.legend(facecolor='#2b2b2b', labelcolor='white')
         ax1.tick_params(colors='white'); [s.set_color('white') for s in ax1.spines.values()]
         
         self.canvas_line = FigureCanvasTkAgg(fig1, master=self.frame_line)
-        self.canvas_line.draw(); self.canvas_line.get_tk_widget().pack(fill="both", expand=True)
+        self.canvas_line.draw()
         
-        # 2. Бар график
-        if self.canvas_bar: self.canvas_bar.get_tk_widget().destroy()
+        # Добавляем Toolbar для линейного графика
+        self.toolbar_line = NavigationToolbar2Tk(self.canvas_line, self.frame_line)
+        self.toolbar_line.update()
+        self.canvas_line.get_tk_widget().pack(fill="both", expand=True)
+        
+        # 2. Bar Chart
         fig2 = Figure(figsize=(6, 4), dpi=100)
         fig2.patch.set_facecolor('#2b2b2b'); ax2 = fig2.add_subplot(111); ax2.set_facecolor('#2b2b2b')
         
-        names = ['Max'] + [k for k in stats if k!='Ideal']
-        vals = [np.mean(stats['Ideal']['totals'])] + [np.mean(stats[k]['totals']) for k in stats if k!='Ideal']
+        names = ['Max'] + top_keys
+        vals = [np.mean(stats['Ideal']['totals'])] + [np.mean(stats[k]['totals']) for k in top_keys]
         
-        ax2.bar(names, vals, color=['#2ec4b6'] + ['#457b9d']*len(names), alpha=0.9)
-        ax2.tick_params(colors='white'); [s.set_color('white') for s in ax2.spines.values()]
+        bars = ax2.bar(names, vals, color=['#2ec4b6'] + ['#457b9d']*len(names), alpha=0.9)
+        ax2.tick_params(colors='white', axis='x', labelsize=8); [s.set_color('white') for s in ax2.spines.values()]
+        ax2.bar_label(bars, fmt='%.1f', color='white', padding=3)
         
         self.canvas_bar = FigureCanvasTkAgg(fig2, master=self.frame_bar)
-        self.canvas_bar.draw(); self.canvas_bar.get_tk_widget().pack(fill="both", expand=True)
+        self.canvas_bar.draw()
 
+        # Добавляем Toolbar для столбчатого графика
+        self.toolbar_bar = NavigationToolbar2Tk(self.canvas_bar, self.frame_bar)
+        self.toolbar_bar.update()
+        self.canvas_bar.get_tk_widget().pack(fill="both", expand=True)
 
 if __name__ == "__main__":
     app = FinalApp()

@@ -2,9 +2,10 @@ import customtkinter as ctk
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 import matplotlib.pyplot as plt
-# --- Добавлен импорт NavigationToolbar2Tk ---
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+import tkinter as tk
+from tkinter import ttk
 
 # =============================================================================
 # 1. МОДЕЛЬ (LOGIC)
@@ -73,7 +74,10 @@ class SugarBeetModel:
         self.matrix_s = np.array(matrix)
         self.n = self.matrix_s.shape[0]
         self.nu = manual_nu
-        self.matrix_beta_avg = np.random.uniform(0.9, 0.98, self.n)
+        
+        # --- Убираем случайность в ручном режиме ---
+        rng = np.random.RandomState(42)
+        self.matrix_beta_avg = rng.uniform(0.9, 0.98, self.n)
 
     def solve_hungarian(self):
         row_ind, col_ind = linear_sum_assignment(-self.matrix_s)
@@ -293,7 +297,7 @@ class FinalApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Sugar Beet Optimization DSS v2.0")
-        self.geometry("1400x900") # Немного увеличил высоту
+        self.geometry("1400x900") 
         
         self.model = SugarBeetModel()
         
@@ -329,13 +333,18 @@ class FinalApp(ctk.CTk):
         self.btn_run = ctk.CTkButton(self.left_frame, text="ЗАПУСТИТЬ РАСЧЕТ", 
                                      height=50, fg_color="green", font=("Arial", 14, "bold"),
                                      command=self.run_process)
-        self.btn_run.pack(padx=20, pady=20, fill="x")
+        self.btn_run.pack(padx=20, pady=(20, 10), fill="x")
+
+        # --- КНОПКА ПОКАЗА МАТРИЦЫ ---
+        self.btn_view_matrix = ctk.CTkButton(self.left_frame, text="ПОКАЗАТЬ МАТРИЦУ", 
+                                             height=40, fg_color="#555", state="disabled", font=("Arial", 12, "bold"),
+                                             command=self.open_matrix_window)
+        self.btn_view_matrix.pack(padx=20, pady=(0, 20), fill="x")
 
         # --- ПРАВАЯ ПАНЕЛЬ ---
         self.right_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.right_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
         self.right_frame.grid_columnconfigure((0, 1, 2), weight=1)
-        # Ряды: 0-KPI, 1-Slider, 2-Graph, 3-Rec
         self.right_frame.grid_rowconfigure(2, weight=1)
 
         # KPI
@@ -346,7 +355,7 @@ class FinalApp(ctk.CTk):
         self.card_loss = InfoCard(self.right_frame, "Min Loss", "--- %", color="#e9c46a")
         self.card_loss.grid(row=0, column=2, sticky="ew", padx=5, pady=(0, 10))
 
-        # --- Панель управления графиками (Слайдер) ---
+        # --- Панель управления графиками ---
         self.ctrl_frame = ctk.CTkFrame(self.right_frame, fg_color="transparent")
         self.ctrl_frame.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 10))
         
@@ -368,11 +377,8 @@ class FinalApp(ctk.CTk):
         self.frame_bar = ctk.CTkFrame(self.tabs_graph.tab("Итоги"), fg_color="transparent")
         self.frame_bar.pack(fill="both", expand=True)
         
-        # Canvas и Toolbars
-        self.canvas_line = None
-        self.canvas_bar = None
-        self.toolbar_line = None
-        self.toolbar_bar = None
+        self.canvas_line = None; self.canvas_bar = None
+        self.toolbar_line = None; self.toolbar_bar = None
 
         # Рекомендация
         self.rec_frame = ctk.CTkFrame(self.right_frame, fg_color="#2b2b2b", border_width=1, border_color="#555")
@@ -385,17 +391,73 @@ class FinalApp(ctk.CTk):
     def open_help(self):
         StrategyHelpWindow(self)
 
-    # --- Обработчик слайдера ---
+    # --- Используем ttk.Treeview ---
+    def open_matrix_window(self):
+        if self.model.matrix_s is None: return
+        
+        top = ctk.CTkToplevel(self)
+        top.title(f"Последняя сгенерированная матрица ({self.model.n}x{self.model.n})")
+        top.geometry("900x600")
+        
+        # Настраиваем стиль для Treeview под темную тему
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("Treeview", 
+                        background="#2b2b2b", 
+                        foreground="white", 
+                        fieldbackground="#2b2b2b",
+                        font=("Arial", 11),
+                        rowheight=25)
+        style.configure("Treeview.Heading", 
+                        background="#3a3a3a", 
+                        foreground="white",
+                        font=("Arial", 11, "bold"))
+        style.map("Treeview", background=[('selected', '#3a7ebf')])
+
+        # Создаем фрейм-контейнер
+        frame = ctk.CTkFrame(top, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Колонки: Batch + дни
+        cols = ["Batch"] + [f"Day {j+1}" for j in range(self.model.n)]
+        
+        tree = ttk.Treeview(frame, columns=cols, show="headings", style="Treeview")
+        
+        # Настройка заголовков и ширины
+        tree.heading("Batch", text="Партия")
+        tree.column("Batch", width=80, anchor="center")
+        
+        for c in cols[1:]:
+            tree.heading(c, text=c)
+            tree.column(c, width=70, anchor="center")
+            
+        # Заполнение данными
+        for i in range(self.model.n):
+            row_vals = [f"Batch {i+1}"] + [f"{val:.2f}" for val in self.model.matrix_s[i]]
+            tree.insert("", "end", values=row_vals)
+
+        # Скроллбары
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+
     def update_graph_view(self, value):
         val = int(value)
         self.lbl_slider.configure(text=f"Топ стратегий: {val}")
         if self.last_stats is not None:
-            # Перерисовываем графики, используя сохраненные данные, без пересчета
             self.draw_graphs(self.last_stats, self.last_runs)
 
     def run_process(self):
         try:
             self.btn_run.configure(text="Вычисление...", state="disabled")
+            self.btn_view_matrix.configure(state="disabled", fg_color="#555")
             self.update()
             
             active_tab = self.tab_selector.get()
@@ -415,7 +477,6 @@ class FinalApp(ctk.CTk):
 
             stats, effective_runs = self.model.run_simulation(runs=runs, manual_mode=manual_mode)
             
-            # --- Сохранение данных для интерактивности ---
             self.last_stats = stats
             self.last_runs = effective_runs
 
@@ -436,6 +497,8 @@ class FinalApp(ctk.CTk):
             
             self.update_recommendation(best[0], best[2], manual_mode)
             self.draw_graphs(stats, effective_runs)
+            
+            self.btn_view_matrix.configure(state="normal", fg_color="#3a7ebf")
             
         except Exception as e:
             self.lbl_rec.configure(text=f"ОШИБКА: {e}")
@@ -466,10 +529,8 @@ class FinalApp(ctk.CTk):
         self.lbl_rec.configure(text=text + advice)
 
     def draw_graphs(self, stats, runs):
-        # --- Читаем значение слайдера ---
         top_n = int(self.slider_strat.get())
 
-        # Очистка Canvas и Toolbars
         if self.canvas_line: 
             self.canvas_line.get_tk_widget().destroy()
         if self.toolbar_line:
@@ -487,7 +548,6 @@ class FinalApp(ctk.CTk):
         
         ax1.plot(days, np.cumsum(stats['Ideal']['dynamics_sum']/runs), 'w--', label='Ideal', alpha=0.5)
         
-        # Сортировка и выбор топ-N стратегий
         sorted_keys = sorted([k for k in stats if k!='Ideal'], key=lambda k: np.mean(stats[k]['totals']), reverse=True)
         top_keys = sorted_keys[:top_n]
         
@@ -502,7 +562,6 @@ class FinalApp(ctk.CTk):
         self.canvas_line = FigureCanvasTkAgg(fig1, master=self.frame_line)
         self.canvas_line.draw()
         
-        # Добавляем Toolbar для линейного графика
         self.toolbar_line = NavigationToolbar2Tk(self.canvas_line, self.frame_line)
         self.toolbar_line.update()
         self.canvas_line.get_tk_widget().pack(fill="both", expand=True)
@@ -521,7 +580,6 @@ class FinalApp(ctk.CTk):
         self.canvas_bar = FigureCanvasTkAgg(fig2, master=self.frame_bar)
         self.canvas_bar.draw()
 
-        # Добавляем Toolbar для столбчатого графика
         self.toolbar_bar = NavigationToolbar2Tk(self.canvas_bar, self.frame_bar)
         self.toolbar_bar.update()
         self.canvas_bar.get_tk_widget().pack(fill="both", expand=True)

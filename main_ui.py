@@ -27,7 +27,6 @@ class SugarBeetModel:
         self.matrix_beta_avg = None 
         
         # Диапазоны (ТЗ)
-        # Сахар задается в долях (0.12 - 0.22)
         self.ranges = {
             'a': (0.12, 0.22), 
             'beta_wither': (0.85, 1.00),
@@ -53,14 +52,11 @@ class SugarBeetModel:
         return 1.0
 
     def generate_matrix(self):
-        # Внутренние расчеты потерь ведутся в процентах (%), 
-        # но в матрицу S мы записываем долю (0.0 - 1.0)
-        
-        C_fraction = np.zeros((self.n, self.n)) # Матрица сахара в долях без потерь
-        S_fraction = np.zeros((self.n, self.n)) # Итоговая матрица выхода в долях
+        C_fraction = np.zeros((self.n, self.n)) 
+        S_fraction = np.zeros((self.n, self.n)) 
         r = self.ranges
         
-        a = np.random.uniform(*r['a'], self.n) # Начальный сахар (доли, напр 0.16)
+        a = np.random.uniform(*r['a'], self.n) 
         K = np.random.uniform(*r['K'], self.n)
         Na = np.random.uniform(*r['Na'], self.n)
         N = np.random.uniform(*r['N'], self.n)
@@ -69,42 +65,28 @@ class SugarBeetModel:
         row_centers = np.random.uniform(r['beta_wither'][0], r['beta_wither'][1], self.n)
         self.matrix_beta_avg = row_centers
 
-        for j in range(self.n): # Столбцы (этапы)
-            # Реальное количество прошедших дней
+        for j in range(self.n): 
             days_passed = j * self.days_per_stage
             
-            for i in range(self.n): # Строки (партии)
-                # 1. Расчет коэффициента лежкости (Beta)
+            for i in range(self.n): 
                 beta = 1.0
                 if j > 0:
                     beta = self._get_beta(j, i, row_centers)
                 
-                # 2. Расчет сахаристости с учетом увядания/дозаривания (без химии пока)
                 if j == 0:
                     C_fraction[i, j] = a[i]
                 else:
                     C_fraction[i, j] = C_fraction[i, j-1] * beta
                 
-                # Переводим текущую долю сахара в проценты для формул потерь
                 Cx_percent = C_fraction[i, j] * 100.0
                 
-                # 3. Расчет химических потерь (ТЗ)
                 loss_percent = 0
                 if self.use_chemistry:
-                    # I растет от времени: I = I0 * (1.029)^days
-                    # Формула ТЗ: I(x) = I0 * (1.029)^x
                     I_curr = I0[i] * (1.029 ** days_passed)
-                    
-                    # Формула (51): M_Cx - потери в мелассе
                     M_Cx = 0.1541*(K[i] + Na[i]) + 0.2159*N[i] + 0.9989*I_curr + 0.1967
-                    
-                    # Формула (50): L - общие потери (M_Cx + 1.1% заводские)
                     loss_percent = M_Cx + 1.1
                 
-                # Итоговый выход сахара в процентах
                 S_percent = Cx_percent - loss_percent
-                
-                # Переводим обратно в доли и записываем в матрицу. Не может быть меньше 0.
                 S_fraction[i, j] = max(0.0, S_percent / 100.0)
                 
         self.matrix_s = S_fraction
@@ -117,19 +99,16 @@ class SugarBeetModel:
         self.matrix_beta_avg = rng.uniform(0.9, 0.98, self.n)
 
     def solve_hungarian_max(self):
-        """Решает задачу максимизации (Max Possible Yield)"""
         row_ind, col_ind = linear_sum_assignment(-self.matrix_s)
         total = self.matrix_s[row_ind, col_ind].sum()
         return total
 
     def solve_hungarian_min(self):
-        """Решает задачу минимизации (Min Possible Yield)"""
         row_ind, col_ind = linear_sum_assignment(self.matrix_s)
         total = self.matrix_s[row_ind, col_ind].sum()
         return total
     
     def solve_hungarian_dynamics(self):
-        """Возвращает динамику для идеального случая (Max)"""
         row_ind, col_ind = linear_sum_assignment(-self.matrix_s)
         total = self.matrix_s[row_ind, col_ind].sum()
         schedule = sorted(zip(col_ind, row_ind), key=lambda x: x[0])
@@ -176,7 +155,6 @@ class SugarBeetModel:
         stats = {k: {'totals': [], 'dynamics_sum': np.zeros(self.n)} for k in strategies}
         stats['Ideal'] = {'totals': [], 'dynamics_sum': np.zeros(self.n)}
         
-        # Добавляем хранилище для Min yield
         min_yields = []
         
         effective_runs = 1 if manual_mode else runs
@@ -185,16 +163,13 @@ class SugarBeetModel:
             if not manual_mode:
                 self.generate_matrix()
             
-            # Max Ideal
             id_sum, id_dyn = self.solve_hungarian_dynamics()
             stats['Ideal']['totals'].append(id_sum)
             stats['Ideal']['dynamics_sum'] += np.array(id_dyn)
             
-            # Min Ideal (только сумма)
             min_val = self.solve_hungarian_min()
             min_yields.append(min_val)
             
-            # Strategies
             for name, func in strategies.items():
                 available = set(range(self.n))
                 daily = []
@@ -303,7 +278,20 @@ class AutoSettingsFrame(ctk.CTkScrollableFrame):
                 'ranges': {}
             }
             
-            # Сбор и валидация диапазонов
+            # --- ВАЛИДАЦИЯ ---
+            # Определяем допустимые границы согласно ТЗ
+            LIMITS = {
+                'a': (0.12, 0.22, "Сахар (доли)"),
+                'beta_wither': (0.85, 1.00, "Увядание"),
+                'beta_ripen': (1.00, 1.15, "Дозаривание"),
+                'K': (4.8, 7.05, "Калий"),
+                'Na': (0.21, 0.82, "Натрий"),
+                'N': (1.58, 2.80, "Азот")
+            }
+            
+            errors = []
+            
+            # Сбор, валидация и проверка диапазонов
             for k in ['a', 'beta_wither', 'beta_ripen', 'K', 'Na', 'N']:
                 v1 = float(self.entries[k][0].get()) # левое
                 v2 = float(self.entries[k][1].get()) # правое
@@ -311,16 +299,41 @@ class AutoSettingsFrame(ctk.CTkScrollableFrame):
                 # Валидация: если перепутали местами
                 if v1 > v2: v1, v2 = v2, v1
                 
-                # Валидация: защита от отрицательных чисел (где это нелогично)
+                # Защита от отрицательных чисел
                 if v1 < 0: v1 = 0
                 if v2 < 0: v2 = 0
                 
+                # Проверка на соответствие глобальным границам ТЗ
+                min_allowed, max_allowed, name = LIMITS[k]
+                
+                # Если введенный пользователем диапазон выходит за рамки ТЗ
+                # (допускаем небольшую погрешность float, но в целом строго)
+                if v1 < min_allowed or v2 > max_allowed:
+                    errors.append(f"{name}: Допустимо от {min_allowed} до {max_allowed}")
+                
                 vals['ranges'][k] = (v1, v2)
+
+            # Проверка скалярных величин
+            if vals['daily_mass'] <= 0:
+                errors.append("Тонн в сутки: должно быть число > 0")
+            if vals['days_per_stage'] <= 0:
+                errors.append("Дней в этапе: должно быть число > 0")
+            if vals['n'] <= 0:
+                errors.append("N (кол-во партий): должно быть > 0")
+            if vals['runs'] <= 0:
+                errors.append("Число прогонов: должно быть > 0")
+
+            # Если есть ошибки, выводим предупреждение и не возвращаем параметры
+            if errors:
+                error_msg = "Обнаружены некорректные данные:\n\n" + "\n".join(errors)
+                messagebox.showwarning("Ошибка входных данных", error_msg)
+                return None
                 
             vals['ranges']['I0'] = (0.62, 0.64)
             return vals
         except ValueError:
-            return None # Ошибка парсинга
+            messagebox.showwarning("Ошибка", "Пожалуйста, убедитесь, что все поля заполнены числами.")
+            return None
 
 class ManualSettingsFrame(ctk.CTkFrame):
      def __init__(self, master, **kwargs):
@@ -570,7 +583,11 @@ class FinalApp(ctk.CTk):
                 self.model.set_manual_matrix(matrix, manual_nu)
             else:
                 p = self.auto_config.get_params()
-                if p is None: raise ValueError("Проверьте введенные числа.")
+                if p is None: 
+                    # Ошибка уже показана в messagebox внутри get_params
+                    # Сбрасываем UI и выходим
+                    self.lbl_rec.configure(text="Исправьте параметры и запустите расчет снова.")
+                    return
                 
                 self.model.n = p['n']; self.model.nu = p['nu']
                 self.model.use_ripening = p['use_ripening']; self.model.use_chemistry = p['use_chemistry']
@@ -614,17 +631,32 @@ class FinalApp(ctk.CTk):
         text = f"Победитель: {name} (Потери {loss:.2f}%).\n\n"
         advice = ""
         if "Critical" in name:
-            advice = "СОВЕТ: В текущих условиях некоторые партии с высоким сахаром портятся слишком быстро. Игнорируйте общую очередь и спасайте их в первую очередь."
+            advice = ("АНАЛИЗ: Обнаружены партии с высоким содержанием сахара, подверженные "
+                      "быстрой деградации. Стандартные стратегии не успевают их обработать.\n"
+                      "СОВЕТ: Используйте индекс риска. Игнорируйте общую очередь и приоритетно "
+                      "спасайте «хрупкие» партии с высоким потенциалом.")
         elif "Mean+StdDev" in name:
-            advice = "СОВЕТ: Высокая вариативность качества сырья. Откажитесь от переработки 'середнячков', фокусируйтесь только на партиях, значительно превышающих средний уровень."
+            advice = ("АНАЛИЗ: Качество сырья крайне неоднородно. Переработка партий среднего "
+                      "качества сейчас нецелесообразна.\n"
+                      "СОВЕТ: Включите фильтрацию. Сосредоточьтесь исключительно на переработке "
+                      "элитных партий (выше среднего + отклонение), пока их качество не упало.")
         elif "Classification" in name:
-            advice = "СОВЕТ: Используйте комбинированный подход. Начало сезона - чистка склада (Бережливая), середина - сортировка по лежкости (CTG), конец - жадный сбор."
+            advice = ("АНАЛИЗ: Сезон имеет выраженные фазы, и одна тактика не работает на всем промежутке.\n"
+                      "СОВЕТ: Примените гибкий подход: начните с утилизации худшего сырья, "
+                      "затем перейдите к сортировке по лежкости, а в конце сезона собирайте максимум.")
         elif "Thrifty->Greedy" in name:
-            advice = f"СОВЕТ: Выраженный эффект дозаривания. Первые {self.model.nu} дней используйте 'Бережливую' тактику, затем резко переходите на 'Жадную'."
+            advice = (f"АНАЛИЗ: Модель показывает сильный эффект природного дозаривания.\n"
+                      f"СОВЕТ: В первые {self.model.nu} этапов работайте в режиме «Накопления» "
+                      f"(Бережливая). Не трогайте лучшие партии, дайте им набрать сахар. "
+                      f"Затем резко переходите к сбору урожая.")
         elif "Greedy" in name:
-            advice = "СОВЕТ: Сильное увядание или отсутствие дозаривания. Не ждите - перерабатывайте самое сладкое сырье немедленно."
+            advice = ("АНАЛИЗ: Эффект дозаривания отсутствует или перекрывается скоростью гниения.\n"
+                      "СОВЕТ: Любое ожидание приводит к финансовым потерям. Используйте тактику "
+                      "«Здесь и сейчас» — отправляйте в переработку самое сладкое сырье немедленно.")
         elif "CTG" in name:
-            advice = "СОВЕТ: Ключевой фактор - лежкость. В первую очередь перерабатывайте партии, которые гниют быстрее всего."
+            advice = ("АНАЛИЗ: Ключевым фактором потерь является не низкий сахар, а плохая лежкость.\n"
+                      "СОВЕТ: Сортируйте склад по коэффициенту деградации. Партии с наихудшей "
+                      "лежкостью должны быть переработаны первыми, независимо от их текущей сахаристости.")
         else:
             advice = f"СОВЕТ: Следуйте стратегии {name}."
 

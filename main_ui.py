@@ -1176,7 +1176,7 @@ class FinalApp(ctk.CTk):
         colors_bar = ['#2ec4b6', '#e63946'] + ['#457b9d']*len(top_keys)  # Зеленый, красный, синие
         bars = ax2.bar(names, vals, color=colors_bar, alpha=0.9)
         ax2.tick_params(colors='white', axis='x', labelsize=8)
-
+        ax2.tick_params(colors='white', axis='y', labelsize=8)
         # УВЕЛИЧИВАЕМ ВЫСОТУ РАМКИ - добавьте эти строки:
         current_ymax = ax2.get_ylim()[1]  # Текущая максимальная высота графика
         ax2.set_ylim(top=current_ymax * 1.2)  # Увеличить верхнюю границу на 20%

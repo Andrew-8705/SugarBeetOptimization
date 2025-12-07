@@ -165,7 +165,7 @@ class SugarBeetModel:
             'Жадная/Бережливая': self.logic_gt,
             'БkЖ (T(k)G)': lambda d, a: self.logic_tkg(d, a, k=k_param),
             'CTG': self.logic_ctg,
-            'Критической деградации': self.logic_critical,
+            'Критической\n деградации': self.logic_critical,
             'Среднее+Отклонение': self.logic_mean_std,
             'Фазовая группировка': self.logic_classification
         }
@@ -1168,7 +1168,7 @@ class FinalApp(ctk.CTk):
         ax2.set_facecolor('#2b2b2b')
 
         # Создаем правильные списки names и vals (ДОБАВЬТЕ ЭТИ СТРОЧКИ)
-        names = ['Max (Ideal)', 'Min (Worst)'] + top_keys
+        names = ['Максимум', 'Минимум'] + top_keys
         vals = [np.mean(stats['Ideal']['totals']), np.mean(stats['Min']['totals'])] + [np.mean(stats[k]['totals']) for k in top_keys]
         vals = [v * scale_y for v in vals]
 

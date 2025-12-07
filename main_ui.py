@@ -440,14 +440,6 @@ class ManualSettingsFrame(ctk.CTkFrame):
         self.entry_k.insert(0, "5")
         self.entry_k.pack(side="right")
         
-        # Runs
-        f_runs = ctk.CTkFrame(self, fg_color="transparent")
-        f_runs.pack(fill="x", pady=5)
-        ctk.CTkLabel(f_runs, text="Число прогонов:").pack(side="left")
-        self.entry_runs = ctk.CTkEntry(f_runs, width=80)
-        self.entry_runs.insert(0, "50")
-        self.entry_runs.pack(side="right")
-        
         # Информация
         ctk.CTkLabel(self, 
                     text="* Нажмите 'Ввести матрицу' для открытия редактора\n* Матрица по умолчанию: 15×15\n* Nu должен быть ≤ размеру матрицы",
@@ -504,15 +496,7 @@ class ManualSettingsFrame(ctk.CTkFrame):
                 k = 1
                 messagebox.showwarning("Ошибка", "k установлен в 1 (значение по умолчанию)")
             
-            # Обработка числа прогонов
-            try:
-                runs = int(self.entry_runs.get())
-                if runs <= 0:
-                    runs = 1
-                    messagebox.showwarning("Ошибка", "Число прогонов должно быть > 0. Установлено в 1")
-            except ValueError:
-                runs = 50
-                messagebox.showwarning("Ошибка", "Число прогонов установлено в 50")
+            runs = 1 # Фиксировано для ручного режима
             
             return self.matrix_data, nu, k, runs
             

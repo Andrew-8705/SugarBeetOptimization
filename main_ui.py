@@ -14,7 +14,7 @@ from tkinter import ttk, messagebox
 class SugarBeetModel:
     def __init__(self):
         self.n = 15
-        self.nu = 7
+        self.nu = 10
         self.use_ripening = True
         self.use_chemistry = True
         self.distribution_type = 'concentrated'
@@ -114,6 +114,13 @@ class SugarBeetModel:
         schedule = sorted(zip(col_ind, row_ind), key=lambda x: x[0])
         daily_yields = [self.matrix_s[batch, day] for day, batch in schedule]
         return total, daily_yields
+    
+    def solve_hungarian_min_dynamics(self):
+        row_ind, col_ind = linear_sum_assignment(self.matrix_s)
+        total = self.matrix_s[row_ind, col_ind].sum()
+        schedule = sorted(zip(col_ind, row_ind), key=lambda x: x[0])
+        daily_yields = [self.matrix_s[batch, day] for day, batch in schedule]
+        return total, daily_yields
 
     # --- Стратегии ---
     def logic_greedy(self, day, available): return max(available, key=lambda i: self.matrix_s[i, day])
@@ -139,13 +146,24 @@ class SugarBeetModel:
         if progress < 0.3: return self.logic_thrifty(day, available)
         elif progress < 0.7: return self.logic_ctg(day, available)
         else: return self.logic_greedy(day, available)
+    def logic_tkg(self, day, available, k=1):
+        if day < self.nu - 1: 
+            pairs = [(i, self.matrix_s[i, day]) for i in available]
+            sorted_pairs = sorted(pairs, key=lambda x: x[1])
+            if k <= len(sorted_pairs):
+                return sorted_pairs[k-1][0]
+            else:
+                return sorted_pairs[-1][0]
+        else: 
+            return self.logic_greedy(day, available)
         
-    def run_simulation(self, runs=50, manual_mode=False):
+    def run_simulation(self, runs=50, manual_mode=False, k_param=1):
         strategies = {
             'Greedy': self.logic_greedy,
             'Thrifty': self.logic_thrifty,
             'Thrifty->Greedy': self.logic_tg,
             'Greedy->Thrifty': self.logic_gt,
+            'БkЖ (T(k)G)': lambda d, a: self.logic_tkg(d, a, k=k_param),
             'CTG (BetaSort)': self.logic_ctg,
             'Critical Ratio': self.logic_critical,
             'Mean+StdDev': self.logic_mean_std,
@@ -154,10 +172,9 @@ class SugarBeetModel:
         
         stats = {k: {'totals': [], 'dynamics_sum': np.zeros(self.n)} for k in strategies}
         stats['Ideal'] = {'totals': [], 'dynamics_sum': np.zeros(self.n)}
+        stats['Min'] = {'totals': [], 'dynamics_sum': np.zeros(self.n)}
         
-        min_yields = []
-        
-        effective_runs = 1 if manual_mode else runs
+        effective_runs = runs
         
         for r in range(effective_runs):
             if not manual_mode:
@@ -167,8 +184,10 @@ class SugarBeetModel:
             stats['Ideal']['totals'].append(id_sum)
             stats['Ideal']['dynamics_sum'] += np.array(id_dyn)
             
-            min_val = self.solve_hungarian_min()
-            min_yields.append(min_val)
+            # Худшая стратегия (Венгерский минимум)
+            min_sum, min_dyn = self.solve_hungarian_min_dynamics() 
+            stats['Min']['totals'].append(min_sum)
+            stats['Min']['dynamics_sum'] += np.array(min_dyn)
             
             for name, func in strategies.items():
                 available = set(range(self.n))
@@ -183,7 +202,7 @@ class SugarBeetModel:
                 stats[name]['totals'].append(tot)
                 stats[name]['dynamics_sum'] += np.array(daily)
                 
-        return stats, min_yields, effective_runs
+        return stats, effective_runs
 
 # =============================================================================
 # 2. UI: ОКНА И ПАНЕЛИ
@@ -199,13 +218,54 @@ class StrategyHelpWindow(ctk.CTkToplevel):
         textbox = ctk.CTkTextbox(self, width=550, height=400, font=("Arial", 14), wrap="word")
         textbox.pack(padx=20, pady=10)
         info_text = (
-            "1. Greedy (Жадная)\nНа каждом шаге выбирает партию с максимальным текущим содержанием сахара.\n\n"
-            "2. Thrifty (Бережливая)\nВыбирает партию с минимальным содержанием сахара, оставляя лучшие 'на потом'.\n\n"
-            "3. Thrifty -> Greedy\nДо дня N (nu) работает как Бережливая, затем переключается на Жадную.\n\n"
-            "4. CTG (BetaSort)\nПриоритет отдается партиям с худшим коэффициентом лежкости.\n\n"
-            "5. Critical Ratio (Критическая деградация)\nВыбирает партию с максимальным отношением Сахар / Коэф.Деградации.\n\n"
-            "6. Mean + StdDev (Выбор лучших)\nРассматривает только те партии, сахар в которых выше 'Среднего + 0.5 Std'.\n\n"
-            "7. Classification (Группировка)\nГибрид: первые 30% — Бережливая, середина — CTG, концовка — Жадная."
+            "ЭВРИСТИЧЕСКИЕ СТРАТЕГИИ ПЛАНИРОВАНИЯ ПЕРЕРАБОТКИ САХАРНОЙ СВЕКЛЫ\n\n"
+            
+            "1. ЖАДНАЯ СТРАТЕГИЯ (Greedy)\n"
+            "На каждом этапе перерабатывается партия с максимальной текущей сахаристостью.\n"
+            "Эффективна при быстрой деградации сырья, когда ожидание приводит к потерям.\n\n"
+            
+            "2. БЕРЕЖЛИВАЯ СТРАТЕГИЯ (Thrifty)\n"
+            "На каждом этапе перерабатывается партия с минимальной сахаристостью.\n"
+            "Оптимальна при дозаривании, когда качество сырья со временем улучшается.\n\n"
+            
+            "3. БЕРЕЖЛИВАЯ/ЖАДНАЯ СТРАТЕГИЯ\n"
+            "Первые (ν-1) этапов: бережливый алгоритм, затем - жадный.\n"
+            "Позволяет сначала накопить потенциал за счет дозаривания, затем собрать максимум.\n\n"
+            
+            "4. ЖАДНАЯ/БЕРЕЖЛИВАЯ СТРАТЕГИЯ\n"
+            "Первые (ν-1) этапов: жадный алгоритм, затем - бережливый.\n"
+            "Применяется, когда первоначальная переработка лучшего сырья экономически выгодна.\n\n"
+            
+            "5. СТРАТЕГИЯ БkЖ (T(k)G)\n"
+            "На первых (ν-1) этапах перерабатывается k-я партия от наихудшей по сахаристости.\n"
+            "Балансирует между сохранением лучшего сырья и использованием средних партий.\n"
+            "Параметр k регулирует агрессивность: от консервативной (k=1) к более активной.\n\n"
+            
+            "6. СТРАТЕГИЯ CTG (Сортировка по лежкости)\n"
+            "Партии упорядочиваются по коэффициентам деградации, сначала перерабатываются\n"
+            "партии с наихудшей лежкостью, независимо от текущей сахаристости.\n"
+            "Эффективна при сильной вариабельности сохранности партий.\n\n"
+            
+            "7. СТРАТЕГИЯ КРИТИЧЕСКОГО ОТНОШЕНИЯ\n"
+            "Максимизирует отношение сахаристость/коэффициент деградации.\n"
+            "Приоритетно обрабатывает партии с высокой сахаристостью, но низкой лежкостью.\n\n"
+            
+            "8. СТРАТЕГИЯ СЕЛЕКТИВНОГО ОТБОРА\n"
+            "Рассматривает только партии с сахаристостью выше среднего + 0.5 стандартных отклонений.\n"
+            "Концентрируется на лучшем сырье, игнорируя средние и низкокачественные партии.\n\n"
+            
+            "9. МНОГОФАЗНАЯ СТРАТЕГИЯ\n"
+            "Разделяет сезон на три фазы с разными алгоритмами:\n"
+            "- Начало (30%): бережливая\n"
+            "- Середина (40%): CTG\n"
+            "- Завершение (30%): жадная\n"
+            "Адаптируется к изменяющейся динамике процесса.\n\n"
+            
+            "ВЫБОР СТРАТЕГИИ ЗАВИСИТ ОТ:\n"
+            "• Характера изменения сахаристости (дозаривание/увядание)\n"
+            "• Вариабельности коэффициентов лежкости между партиями\n"
+            "• Распределения качества сырья (равномерное/концентрированное)\n"
+            "• Фазности процесса в течение сезона"
         )
         textbox.insert("0.0", info_text)
         textbox.configure(state="disabled")
@@ -221,6 +281,7 @@ class AutoSettingsFrame(ctk.CTkScrollableFrame):
         
         self.add_section("2. Логика модели")
         self.add_input("Nu (День перекл.)", "nu", str(model.nu))
+        self.add_input("k (для БkЖ стратегии)", "k_param", "5")
         self.sw_rip = ctk.CTkSwitch(self, text="Дозаривание")
         if model.use_ripening: self.sw_rip.select()
         self.sw_rip.pack(anchor="w", padx=10, pady=5)
@@ -270,6 +331,7 @@ class AutoSettingsFrame(ctk.CTkScrollableFrame):
                 'n': int(self.entries['n'].get()),
                 'nu': int(self.entries['nu'].get()),
                 'runs': int(self.entries['runs'].get()),
+                'k_param': int(self.entries['k_param'].get()),
                 'use_ripening': bool(self.sw_rip.get()),
                 'use_chemistry': bool(self.sw_chem.get()),
                 'distribution': 'concentrated' if self.sw_dist.get() else 'uniform',
@@ -322,6 +384,10 @@ class AutoSettingsFrame(ctk.CTkScrollableFrame):
                 errors.append("N (кол-во партий): должно быть > 0")
             if vals['runs'] <= 0:
                 errors.append("Число прогонов: должно быть > 0")
+            if vals['k_param'] < 1:
+                errors.append("k должен быть ≥ 1")
+            elif vals['k_param'] > vals['n'] - vals['nu'] + 1:
+                errors.append(f"k должен быть ≤ {vals['n'] - vals['nu'] + 1} (n - nu + 1)")    
 
             # Если есть ошибки, выводим предупреждение и не возвращаем параметры
             if errors:
@@ -336,35 +402,364 @@ class AutoSettingsFrame(ctk.CTkScrollableFrame):
             return None
 
 class ManualSettingsFrame(ctk.CTkFrame):
-     def __init__(self, master, **kwargs):
+    def __init__(self, master, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
-        ctk.CTkLabel(self, text="Матрица выхода S (строки через Enter):", font=("Arial", 12, "bold")).pack(anchor="w", pady=(10, 5))
-        self.textbox = ctk.CTkTextbox(self, font=("Consolas", 12), height=200)
-        self.textbox.pack(fill="x", pady=5)
-        self.textbox.insert("0.0", "0.15 0.14 0.13\n0.14 0.13 0.12\n0.16 0.15 0.14")
+        
+        # Заголовок
+        ctk.CTkLabel(self, text="Ручной режим", font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 10))
+        
+        # Кнопка для ввода матрицы
+        self.btn_open_matrix = ctk.CTkButton(self, text="📋 Ввести матрицу", 
+                                           height=40, font=("Arial", 13, "bold"),
+                                           command=self.open_matrix_editor)
+        self.btn_open_matrix.pack(fill="x", pady=(0, 20))
+        
+        ctk.CTkLabel(self, text="Текущий размер: 15×15", font=("Arial", 11), 
+                    text_color="#a0a0a0").pack(anchor="w", pady=(0, 10))
+        
+        # Разделитель
         sep = ctk.CTkFrame(self, height=2, fg_color="gray")
-        sep.pack(fill="x", pady=15)
+        sep.pack(fill="x", pady=10)
+        
+        # Параметры обработки
         ctk.CTkLabel(self, text="Параметры обработки:", font=("Arial", 12, "bold")).pack(anchor="w")
+        
+        # Nu
         f_nu = ctk.CTkFrame(self, fg_color="transparent")
         f_nu.pack(fill="x", pady=5)
         ctk.CTkLabel(f_nu, text="Nu (День смены стратегии):").pack(side="left")
-        self.entry_nu = ctk.CTkEntry(f_nu, width=60)
-        self.entry_nu.insert(0, "2")
+        self.entry_nu = ctk.CTkEntry(f_nu, width=80)
+        self.entry_nu.insert(0, "10")
         self.entry_nu.pack(side="right")
-        ctk.CTkLabel(self, text="* Остальные параметры (химия, диапазоны)\nпри ручном вводе не применяются,\nт.к. вы вводите уже финальный выход.", font=("Arial", 11), text_color="#e07a5f").pack(pady=10)
-     def get_data(self):
-        text = self.textbox.get("0.0", "end").strip()
-        if not text: return None, None
+        
+        # k
+        f_k = ctk.CTkFrame(self, fg_color="transparent")
+        f_k.pack(fill="x", pady=5)
+        ctk.CTkLabel(f_k, text="k (для стратегии БkЖ):").pack(side="left")
+        self.entry_k = ctk.CTkEntry(f_k, width=80)
+        self.entry_k.insert(0, "5")
+        self.entry_k.pack(side="right")
+        
+        # Runs
+        f_runs = ctk.CTkFrame(self, fg_color="transparent")
+        f_runs.pack(fill="x", pady=5)
+        ctk.CTkLabel(f_runs, text="Число прогонов:").pack(side="left")
+        self.entry_runs = ctk.CTkEntry(f_runs, width=80)
+        self.entry_runs.insert(0, "50")
+        self.entry_runs.pack(side="right")
+        
+        # Информация
+        ctk.CTkLabel(self, 
+                    text="* Нажмите 'Ввести матрицу' для открытия редактора\n* Матрица по умолчанию: 15×15\n* Nu должен быть ≤ размеру матрицы",
+                    font=("Arial", 11), text_color="#e07a5f", justify="left").pack(anchor="w", pady=15)
+        
+        # Хранилище данных
+        self.matrix_data = None
+        self.current_size = 15
+    
+    def open_matrix_editor(self):
+        """Открывает окно редактора матрицы"""
+        editor = MatrixEditorWindow(self, self.current_size, self.matrix_data)
+        editor.grab_set()  # Модальное окно
+        self.wait_window(editor)
+        
+        # Получаем данные после закрытия окна
+        if editor.result_data:
+            self.matrix_data = editor.result_data
+            self.current_size = editor.result_size
+            # Обновляем подпись
+            for widget in self.winfo_children():
+                if isinstance(widget, ctk.CTkLabel) and "Текущий размер:" in widget.cget("text"):
+                    widget.configure(text=f"Текущий размер: {self.current_size}×{self.current_size}")
+                    break
+    
+    def get_data(self):
+        """Получает данные матрицы и параметры"""
+        # Проверка наличия матрицы
+        if self.matrix_data is None:
+            messagebox.showwarning("Нет данных", "Сначала введите матрицу, нажав 'Ввести матрицу'")
+            return None, None, None, None
+        
         try:
-            rows = text.split('\n')
-            matrix = []
-            for r in rows:
-                if r.strip():
-                    matrix.append([float(x) for x in r.replace(',', '.').split()])
-            nu = int(self.entry_nu.get())
-            return matrix, nu
+            # Обработка nu
+            try:
+                nu = int(self.entry_nu.get())
+                if nu <= 0:
+                    nu = 2
+                    messagebox.showwarning("Коррекция Nu", "Nu должен быть > 0. Установлено в 2")
+                elif nu > self.current_size:
+                    nu = self.current_size
+                    messagebox.showwarning("Коррекция Nu", f"Nu не может быть больше N={self.current_size}. Установлено в {self.current_size}")
+            except ValueError:
+                nu = 2
+                messagebox.showwarning("Ошибка", "Nu установлен в 2 (значение по умолчанию)")
+            
+            # Обработка k
+            try:
+                k = int(self.entry_k.get())
+                if k < 1:
+                    k = 1
+                    messagebox.showwarning("Коррекция k", "k установлен в 1 (минимальное значение)")
+            except ValueError:
+                k = 1
+                messagebox.showwarning("Ошибка", "k установлен в 1 (значение по умолчанию)")
+            
+            # Обработка числа прогонов
+            try:
+                runs = int(self.entry_runs.get())
+                if runs <= 0:
+                    runs = 1
+                    messagebox.showwarning("Ошибка", "Число прогонов должно быть > 0. Установлено в 1")
+            except ValueError:
+                runs = 50
+                messagebox.showwarning("Ошибка", "Число прогонов установлено в 50")
+            
+            return self.matrix_data, nu, k, runs
+            
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка обработки параметров:\n{e}")
+            return None, None, None, None
+
+
+class MatrixEditorWindow(ctk.CTkToplevel):
+    """Окно редактора матрицы"""
+    def __init__(self, parent, current_size=15, existing_data=None):
+        super().__init__(parent)
+        self.parent = parent
+        
+        self.title("Редактор матрицы")
+        self.geometry("900x600")
+        self.resizable(True, True)
+        
+        # Данные
+        self.size = current_size
+        self.result_data = existing_data
+        self.result_size = current_size
+        
+        # Создаем интерфейс
+        self.create_widgets()
+        
+        # Если есть данные - заполняем, иначе дефолт для 15×15
+        if self.result_data is None and self.size == 15:
+            self.fill_default_15x15()
+    
+    def create_widgets(self):
+        """Создает интерфейс редактора"""
+        # Основной контейнер
+        main_container = ctk.CTkFrame(self)
+        main_container.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Верхняя панель управления
+        top_panel = ctk.CTkFrame(main_container, fg_color="transparent")
+        top_panel.pack(fill="x", pady=(0, 10))
+        
+        ctk.CTkLabel(top_panel, text="Редактор матрицы", 
+                    font=("Arial", 14, "bold")).pack(side="left")
+        
+        # Управление размером справа
+        size_frame = ctk.CTkFrame(top_panel, fg_color="transparent")
+        size_frame.pack(side="right")
+        
+        ctk.CTkLabel(size_frame, text="Размер N×N:").pack(side="left", padx=(0, 5))
+        self.size_var = ctk.StringVar(value=str(self.size))
+        self.size_combo = ctk.CTkComboBox(size_frame, 
+                                         values=["5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "20", "25"],
+                                         variable=self.size_var,
+                                         width=70)
+        self.size_combo.pack(side="left", padx=(0, 10))
+        
+        ctk.CTkButton(size_frame, text="Изменить", width=80,
+                     command=self.change_size).pack(side="left")
+        
+        # Область с матрицей
+        matrix_frame = ctk.CTkFrame(main_container)
+        matrix_frame.pack(fill="both", expand=True, pady=(0, 10))
+        
+        # Создаем таблицу
+        self.create_matrix_table(matrix_frame)
+        
+        # Нижняя панель с кнопками
+        bottom_panel = ctk.CTkFrame(main_container, fg_color="transparent")
+        bottom_panel.pack(fill="x")
+        
+        # Левая часть - кнопка очистки
+        left_buttons = ctk.CTkFrame(bottom_panel, fg_color="transparent")
+        left_buttons.pack(side="left")
+        
+        ctk.CTkButton(left_buttons, text="Очистить", 
+                     width=80, command=self.clear_matrix).pack(side="left", padx=5)
+        
+        # Правая часть - кнопки сохранения
+        right_buttons = ctk.CTkFrame(bottom_panel, fg_color="transparent")
+        right_buttons.pack(side="right")
+        
+        ctk.CTkButton(right_buttons, text="Отмена", 
+                     width=80, command=self.cancel, fg_color="#555").pack(side="left", padx=5)
+        
+        ctk.CTkButton(right_buttons, text="Сохранить", 
+                     width=80, command=self.save, fg_color="green").pack(side="left", padx=5)
+    
+    def create_matrix_table(self, parent):
+        """Создает таблицу для ввода матрицы"""
+        # Создаем фрейм с прокруткой
+        container = ctk.CTkFrame(parent)
+        container.pack(fill="both", expand=True)
+        
+        # Канвас для прокрутки
+        canvas = tk.Canvas(container, bg="#2b2b2b", highlightthickness=0)
+        vsb = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        hsb = ttk.Scrollbar(container, orient="horizontal", command=canvas.xview)
+        
+        canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        
+        # Внутренний фрейм для таблицы
+        self.table_frame = ctk.CTkFrame(canvas, fg_color="#2b2b2b")
+        canvas.create_window((0, 0), window=self.table_frame, anchor="nw")
+        
+        # Размещаем элементы
+        vsb.pack(side="right", fill="y")
+        hsb.pack(side="bottom", fill="x")
+        canvas.pack(side="left", fill="both", expand=True)
+        
+        # Создаем ячейки
+        self.cells = []
+        self.create_cells()
+        
+        # Настройка прокрутки
+        self.table_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    
+    def create_cells(self):
+        """Создает ячейки матрицы"""
+        # Очищаем старые ячейки
+        for widget in self.table_frame.winfo_children():
+            widget.destroy()
+        self.cells = []
+        
+        # Создаем заголовки столбцов
+        for col in range(self.size + 1):
+            for row in range(self.size + 1):
+                if col == 0 and row == 0:
+                    # Левый верхний угол
+                    lbl = ctk.CTkLabel(self.table_frame, text="Партия/Этап", 
+                                      width=100, height=30,
+                                      font=("Arial", 10),
+                                      fg_color="#3a3a3a", corner_radius=0)
+                    lbl.grid(row=row, column=col, padx=1, pady=1, sticky="nsew")
+                elif col == 0:
+                    # Номера строк
+                    lbl = ctk.CTkLabel(self.table_frame, text=f"#{row}", 
+                                      width=50, height=30,
+                                      font=("Arial", 10),
+                                      fg_color="#3a3a3a", corner_radius=0)
+                    lbl.grid(row=row, column=col, padx=1, pady=1, sticky="nsew")
+                elif row == 0:
+                    # Номера столбцов
+                    lbl = ctk.CTkLabel(self.table_frame, text=f"{col}", 
+                                      width=70, height=30,
+                                      font=("Arial", 10),
+                                      fg_color="#3a3a3a", corner_radius=0)
+                    lbl.grid(row=row, column=col, padx=1, pady=1, sticky="nsew")
+                else:
+                    # Ячейки для ввода
+                    entry = ctk.CTkEntry(self.table_frame, width=70, height=30,
+                                        font=("Arial", 10), justify="center",
+                                        placeholder_text="0.00")
+                    entry.grid(row=row, column=col, padx=1, pady=1, sticky="nsew")
+                    
+                    # Сохраняем ссылку
+                    if len(self.cells) <= row-1:
+                        self.cells.append([])
+                    self.cells[row-1].append(entry)
+        
+        # Если есть данные - заполняем
+        if self.result_data:
+            self.fill_from_data()
+    
+    def fill_from_data(self):
+        """Заполняет таблицу из сохраненных данных"""
+        if self.result_data and len(self.result_data) == self.size:
+            for i in range(self.size):
+                for j in range(self.size):
+                    if i < len(self.cells) and j < len(self.cells[i]):
+                        self.cells[i][j].delete(0, "end")
+                        self.cells[i][j].insert(0, f"{self.result_data[i][j]:.3f}")
+    
+    def fill_default_15x15(self):
+        """Заполняет таблицу 15×15 дефолтными значениями"""
+        if self.size != 15:
+            return  # Просто не заполняем для других размеров
+        
+        default_data = [
+            [0.16, 0.20, 0.22, 0.25, 0.26, 0.27, 0.28, 0.25, 0.21, 0.19, 0.15, 0.10, 0.07, 0.04, 0.01],
+            [0.18, 0.18, 0.21, 0.23, 0.26, 0.30, 0.33, 0.29, 0.24, 0.20, 0.18, 0.14, 0.11, 0.08, 0.04],
+            [0.17, 0.18, 0.18, 0.18, 0.18, 0.19, 0.22, 0.18, 0.14, 0.10, 0.07, 0.05, 0.02, 0.00, 0.00],
+            [0.15, 0.17, 0.19, 0.22, 0.25, 0.25, 0.23, 0.19, 0.17, 0.13, 0.10, 0.07, 0.04, 0.01, 0.00],
+            [0.11, 0.11, 0.13, 0.14, 0.15, 0.16, 0.18, 0.13, 0.11, 0.09, 0.07, 0.04, 0.02, 0.00, 0.00],
+            [0.16, 0.18, 0.20, 0.20, 0.23, 0.26, 0.26, 0.23, 0.19, 0.15, 0.11, 0.08, 0.06, 0.03, 0.00],
+            [0.16, 0.16, 0.16, 0.17, 0.18, 0.18, 0.19, 0.17, 0.18, 0.14, 0.11, 0.09, 0.06, 0.03, 0.00],
+            [0.10, 0.10, 0.12, 0.12, 0.13, 0.15, 0.15, 0.14, 0.13, 0.11, 0.10, 0.09, 0.07, 0.05, 0.00],
+            [0.18, 0.18, 0.21, 0.23, 0.26, 0.26, 0.26, 0.22, 0.20, 0.18, 0.15, 0.13, 0.10, 0.07, 0.04],
+            [0.16, 0.17, 0.18, 0.21, 0.23, 0.24, 0.26, 0.22, 0.20, 0.18, 0.13, 0.10, 0.07, 0.04, 0.01],
+            [0.11, 0.13, 0.15, 0.15, 0.16, 0.17, 0.18, 0.16, 0.14, 0.12, 0.09, 0.06, 0.04, 0.01, 0.00],
+            [0.13, 0.13, 0.13, 0.14, 0.15, 0.16, 0.19, 0.15, 0.13, 0.10, 0.07, 0.05, 0.02, 0.00, 0.00],
+            [0.11, 0.13, 0.14, 0.14, 0.16, 0.17, 0.17, 0.15, 0.12, 0.09, 0.06, 0.03, 0.01, 0.00, 0.00],
+            [0.15, 0.13, 0.13, 0.20, 0.21, 0.24, 0.26, 0.27, 0.26, 0.24, 0.22, 0.21, 0.19, 0.17, 0.14],
+            [0.10, 0.11, 0.12, 0.13, 0.13, 0.14, 0.14, 0.12, 0.10, 0.09, 0.07, 0.05, 0.04, 0.01, 0.00]
+        ]
+        
+        for i in range(self.size):
+            for j in range(self.size):
+                if i < len(self.cells) and j < len(self.cells[i]):
+                    self.cells[i][j].delete(0, "end")
+                    self.cells[i][j].insert(0, f"{default_data[i][j]:.3f}")
+    
+    def clear_matrix(self):
+        """Очищает все ячейки матрицы"""
+        for row in self.cells:
+            for cell in row:
+                cell.delete(0, "end")
+    
+    def change_size(self):
+        """Изменяет размер матрицы"""
+        try:
+            new_size = int(self.size_var.get())
+            if 1 <= new_size <= 30:
+                self.size = new_size
+                self.result_data = None  # Сбрасываем данные при изменении размера
+                self.create_cells()
+                # Автоматически заполняем дефолтом если 15×15
+                if self.size == 15 and self.result_data is None:
+                    self.fill_default_15x15()
+            else:
+                messagebox.showwarning("Ошибка", "Размер должен быть от 1 до 30")
         except ValueError:
-            return None, None
+            messagebox.showwarning("Ошибка", "Введите целое число")
+    
+    def save(self):
+        """Сохраняет матрицу"""
+        try:
+            matrix = []
+            for i in range(self.size):
+                row = []
+                for j in range(self.size):
+                    value = self.cells[i][j].get().strip()
+                    if value == "":
+                        row.append(0.0)
+                    else:
+                        row.append(float(value.replace(',', '.')))
+                matrix.append(row)
+            
+            self.result_data = matrix
+            self.result_size = self.size
+            self.destroy()
+            
+        except ValueError as e:
+            messagebox.showerror("Ошибка ввода", f"Некорректные данные в матрице:\n{e}")
+    
+    def cancel(self):
+        """Отменяет редактирование"""
+        self.result_data = None
+        self.destroy()
 
 class InfoCard(ctk.CTkFrame):
     def __init__(self, master, title, value, color="#3a7ebf"):
@@ -458,7 +853,7 @@ class FinalApp(ctk.CTk):
         self.lbl_slider = ctk.CTkLabel(self.ctrl_frame, text="Топ стратегий: 5", font=("Arial", 12))
         self.lbl_slider.pack(side="left", padx=(10, 10))
         
-        self.slider_strat = ctk.CTkSlider(self.ctrl_frame, from_=2, to=8, number_of_steps=6, width=200, command=self.update_graph_view)
+        self.slider_strat = ctk.CTkSlider(self.ctrl_frame, from_=1, to=10, number_of_steps=9, width=250, command=self.update_graph_view)
         self.slider_strat.set(5)
         self.slider_strat.pack(side="left", padx=10)
         
@@ -575,11 +970,16 @@ class FinalApp(ctk.CTk):
             
             active_tab = self.tab_selector.get()
             manual_mode = (active_tab == "Ручной Ввод")
-            runs = 50
             
             if manual_mode:
-                matrix, manual_nu = self.manual_config.get_data()
+                matrix, manual_nu, k_param, runs = self.manual_config.get_data()
                 if matrix is None: raise ValueError("Матрица пуста!")
+                if k_param is None:
+                    k_param = 1
+                n_rows = len(matrix)
+                max_k = max(1, n_rows - manual_nu + 1) if manual_nu <= n_rows else 1
+                if k_param > max_k:
+                    k_param = max_k
                 self.model.set_manual_matrix(matrix, manual_nu)
             else:
                 p = self.auto_config.get_params()
@@ -595,20 +995,20 @@ class FinalApp(ctk.CTk):
                 self.model.daily_mass = p['daily_mass']
                 self.model.days_per_stage = p['days_per_stage']
                 runs = p['runs']
+                k_param = p.get('k_param', 1)
 
-            stats, min_yields, effective_runs = self.model.run_simulation(runs=runs, manual_mode=manual_mode)
+            stats, effective_runs = self.model.run_simulation(runs=runs, manual_mode=manual_mode, k_param = k_param)
             
             self.last_stats = stats
-            self.last_min_yields = min_yields
             self.last_runs = effective_runs
 
             # Анализ
             avg_ideal = np.mean(stats['Ideal']['totals'])
-            avg_min = np.mean(min_yields)
+            avg_min = np.mean(stats['Min']['totals'])
             
             results = []
             for name in stats:
-                if name == 'Ideal': continue
+                if name in ['Ideal', 'Min']: continue
                 val = np.mean(stats[name]['totals'])
                 loss = (1 - val/avg_ideal) * 100 if avg_ideal != 0 else 0
                 results.append((name, val, loss))
@@ -616,7 +1016,7 @@ class FinalApp(ctk.CTk):
             best = results[0]
             
             self.update_kpi_cards_display(best[0], best[2], avg_ideal, avg_min)
-            self.update_recommendation(best[0], best[2], manual_mode)
+            self.update_recommendation(best[0], best[2], manual_mode, k_param)
             self.draw_graphs(stats, effective_runs)
             
             self.btn_view_matrix.configure(state="normal", fg_color="#3a7ebf")
@@ -627,42 +1027,80 @@ class FinalApp(ctk.CTk):
         finally:
             self.btn_run.configure(text="ЗАПУСТИТЬ РАСЧЕТ", state="normal")
 
-    def update_recommendation(self, name, loss, manual_mode):
-        text = f"Победитель: {name} (Потери {loss:.2f}%).\n\n"
-        advice = ""
-        if "Critical" in name:
-            advice = ("АНАЛИЗ: Обнаружены партии с высоким содержанием сахара, подверженные "
-                      "быстрой деградации. Стандартные стратегии не успевают их обработать.\n"
-                      "СОВЕТ: Используйте индекс риска. Игнорируйте общую очередь и приоритетно "
-                      "спасайте «хрупкие» партии с высоким потенциалом.")
-        elif "Mean+StdDev" in name:
-            advice = ("АНАЛИЗ: Качество сырья крайне неоднородно. Переработка партий среднего "
-                      "качества сейчас нецелесообразна.\n"
-                      "СОВЕТ: Включите фильтрацию. Сосредоточьтесь исключительно на переработке "
-                      "элитных партий (выше среднего + отклонение), пока их качество не упало.")
-        elif "Classification" in name:
-            advice = ("АНАЛИЗ: Сезон имеет выраженные фазы, и одна тактика не работает на всем промежутке.\n"
-                      "СОВЕТ: Примените гибкий подход: начните с утилизации худшего сырья, "
-                      "затем перейдите к сортировке по лежкости, а в конце сезона собирайте максимум.")
-        elif "Thrifty->Greedy" in name:
-            advice = (f"АНАЛИЗ: Модель показывает сильный эффект природного дозаривания.\n"
-                      f"СОВЕТ: В первые {self.model.nu} этапов работайте в режиме «Накопления» "
-                      f"(Бережливая). Не трогайте лучшие партии, дайте им набрать сахар. "
-                      f"Затем резко переходите к сбору урожая.")
-        elif "Greedy" in name:
-            advice = ("АНАЛИЗ: Эффект дозаривания отсутствует или перекрывается скоростью гниения.\n"
-                      "СОВЕТ: Любое ожидание приводит к финансовым потерям. Используйте тактику "
-                      "«Здесь и сейчас» — отправляйте в переработку самое сладкое сырье немедленно.")
-        elif "CTG" in name:
-            advice = ("АНАЛИЗ: Ключевым фактором потерь является не низкий сахар, а плохая лежкость.\n"
-                      "СОВЕТ: Сортируйте склад по коэффициенту деградации. Партии с наихудшей "
-                      "лежкостью должны быть переработаны первыми, независимо от их текущей сахаристости.")
-        else:
-            advice = f"СОВЕТ: Следуйте стратегии {name}."
-
+    def update_recommendation(self, name, loss, manual_mode, k_param=1):
+        recommendation_text = f"РЕКОМЕНДУЕМАЯ СТРАТЕГИЯ: {name}\n"
+        recommendation_text += f"Отклонение от теоретического максимума: {loss:.2f}%\n\n"
+        
+        # Лаконичные, но содержательные выводы
+        analysis_dict = {
+            "Greedy": (
+                "Данные показывают преобладание процессов увядания.\n"
+                "Оптимальна стратегия немедленной переработки сырья с максимальной сахаристостью."
+            ),
+            
+            "Thrifty": (
+                "Наблюдается выраженный эффект дозаривания.\n"
+                "Рекомендуется отложенная переработка для накопления потенциала."
+            ),
+            
+            "Thrifty->Greedy": (
+                "Процесс демонстрирует двухфазную динамику.\n"
+                "Эффективна стратегия накопления с последующим активным сбором."
+            ),
+            
+            "Greedy->Thrifty": (
+                "Начальное качество имеет критическое значение.\n"
+                "Первоочередная переработка лучшего сырья экономически оправдана."
+            ),
+            
+            "БkЖ (T(k)G)": (
+                "Требуется балансировка между различными подходами.\n"
+                "Стратегия с промежуточным выбором обеспечивает оптимальный компромисс."
+            ),
+            
+            "CTG (BetaSort)": (
+                "Ключевой фактор - вариабельность сохранности партий.\n"
+                "Приоритет должен отдаваться партиям с наихудшей лежкостью."
+            ),
+            
+            "Critical Ratio": (
+                "Выявлены партии с особыми характеристиками сохранности.\n"
+                "Эффективен подход, учитывающий как текущее качество, так и скорость деградации."
+            ),
+            
+            "Mean+StdDev": (
+                "Качество сырья имеет выраженную неоднородность.\n"
+                "Концентрация на лучшей части партий максимизирует выход продукции."
+            ),
+            
+            "Classification": (
+                "Динамика процесса изменяется в течение сезона.\n"
+                "Адаптивная стратегия с разными подходами на разных этапах оптимальна."
+            )
+        }
+        
+        # Практические указания
+        if name in analysis_dict:
+            recommendation_text += "АНАЛИЗ:\n" + analysis_dict[name] + "\n\n"
+        
+        recommendation_text += "ПРАКТИЧЕСКИЕ УКАЗАНИЯ:\n"
+        
+        # Общие для всех стратегий
+        common_actions = [
+            "Регулярно контролируйте актуальные показатели сахаристости",
+            "Корректируйте планы при изменении внешних условий",
+            "Документируйте принятые решения для последующего анализа"
+        ]
+        
         if manual_mode:
-            advice += "\n(Примечание: Анализ выполнен для единственной введенной матрицы)."
-        self.lbl_rec.configure(text=text + advice)
+            recommendation_text += "Анализ выполнен для предоставленной матрицы данных.\n"
+        else:
+            recommendation_text += "Выводы основаны на статистической обработке результатов моделирования.\n"
+        
+        for action in common_actions:
+            recommendation_text += f"• {action}\n"
+        
+        self.lbl_rec.configure(text=recommendation_text)
 
     def draw_graphs(self, stats, runs):
         top_n = int(self.slider_strat.get())
@@ -672,12 +1110,12 @@ class FinalApp(ctk.CTk):
         scale_x = self.model.days_per_stage if use_real else 1.0
         
         # Обновляем KPI при смене тумблера
-        if self.last_stats and self.last_min_yields:
+        if self.last_stats:
              avg_ideal = np.mean(stats['Ideal']['totals'])
-             avg_min = np.mean(self.last_min_yields)
+             avg_min = np.mean(stats['Min']['totals'])
              results = []
              for name in stats:
-                if name == 'Ideal': continue
+                if name in ['Ideal', 'Min']: continue
                 val = np.mean(stats[name]['totals'])
                 loss = (1 - val/avg_ideal) * 100 if avg_ideal != 0 else 0
                 results.append((name, val, loss))
@@ -703,9 +1141,19 @@ class FinalApp(ctk.CTk):
         
         y_ideal = np.cumsum(stats['Ideal']['dynamics_sum']/runs) * scale_y
         ax1.plot(x_vals, y_ideal, 'w--', label='Ideal', alpha=0.5)
+
+        y_min = np.cumsum(stats['Min']['dynamics_sum']/runs) * scale_y
+        ax1.plot(x_vals, y_min, 'r--', label='Min (Worst)', alpha=0.5, linewidth=2)
         
-        sorted_keys = sorted([k for k in stats if k!='Ideal'], key=lambda k: np.mean(stats[k]['totals']), reverse=True)
-        top_keys = sorted_keys[:top_n]
+        # Сортируем стратегии (исключая Ideal и Min)
+        strategy_names = [k for k in stats if k not in ['Ideal', 'Min']]
+        sorted_keys = sorted(strategy_names, key=lambda k: np.mean(stats[k]['totals']), reverse=True)
+    
+        # Показываем топ стратегий
+        if top_n >= len(sorted_keys):
+            top_keys = sorted_keys  # Все стратегии
+        else:
+            top_keys = sorted_keys[:top_n]
         
         colors = ['#e76f51', '#2a9d8f', '#e9c46a', '#f4a261', '#81b29a', '#f1faee', '#a8dadc', '#457b9d']
         for i, name in enumerate(top_keys):
@@ -731,19 +1179,30 @@ class FinalApp(ctk.CTk):
         
         # 2. Bar Chart
         fig2 = Figure(figsize=(6, 4), dpi=100)
-        fig2.patch.set_facecolor('#2b2b2b'); ax2 = fig2.add_subplot(111); ax2.set_facecolor('#2b2b2b')
-        
-        names = ['Max'] + top_keys
-        vals = [np.mean(stats['Ideal']['totals'])] + [np.mean(stats[k]['totals']) for k in top_keys]
+        fig2.patch.set_facecolor('#2b2b2b')
+        ax2 = fig2.add_subplot(111)
+        ax2.set_facecolor('#2b2b2b')
+
+        # Создаем правильные списки names и vals (ДОБАВЬТЕ ЭТИ СТРОЧКИ)
+        names = ['Max (Ideal)', 'Min (Worst)'] + top_keys
+        vals = [np.mean(stats['Ideal']['totals']), np.mean(stats['Min']['totals'])] + [np.mean(stats[k]['totals']) for k in top_keys]
         vals = [v * scale_y for v in vals]
-        
-        bars = ax2.bar(names, vals, color=['#2ec4b6'] + ['#457b9d']*len(names), alpha=0.9)
-        ax2.tick_params(colors='white', axis='x', labelsize=8); [s.set_color('white') for s in ax2.spines.values()]
-        
+
+        # Создаем правильный список цветов
+        colors_bar = ['#2ec4b6', '#e63946'] + ['#457b9d']*len(top_keys)  # Зеленый, красный, синие
+        bars = ax2.bar(names, vals, color=colors_bar, alpha=0.9)
+        ax2.tick_params(colors='white', axis='x', labelsize=8)
+
+        # УВЕЛИЧИВАЕМ ВЫСОТУ РАМКИ - добавьте эти строки:
+        current_ymax = ax2.get_ylim()[1]  # Текущая максимальная высота графика
+        ax2.set_ylim(top=current_ymax * 1.2)  # Увеличить верхнюю границу на 20%
+
+        [s.set_color('white') for s in ax2.spines.values()]
+
         fmt_str = '%.0f' if use_real else '%.2f'
         ax2.bar_label(bars, fmt=fmt_str, color='white', padding=3)
         ax2.set_ylabel(y_label, color='white', fontsize=9)
-        
+
         self.canvas_bar = FigureCanvasTkAgg(fig2, master=self.frame_bar)
         self.canvas_bar.draw()
 

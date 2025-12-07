@@ -159,15 +159,15 @@ class SugarBeetModel:
         
     def run_simulation(self, runs=50, manual_mode=False, k_param=1):
         strategies = {
-            'Greedy': self.logic_greedy,
-            'Thrifty': self.logic_thrifty,
-            'Thrifty->Greedy': self.logic_tg,
-            'Greedy->Thrifty': self.logic_gt,
+            'Жадная': self.logic_greedy,
+            'Бережливая': self.logic_thrifty,
+            'Бережливая/Жадная': self.logic_tg,
+            'Жадная/Бережливая': self.logic_gt,
             'БkЖ (T(k)G)': lambda d, a: self.logic_tkg(d, a, k=k_param),
-            'CTG (BetaSort)': self.logic_ctg,
-            'Critical Ratio': self.logic_critical,
-            'Mean+StdDev': self.logic_mean_std,
-            'Classification': self.logic_classification
+            'CTG': self.logic_ctg,
+            'Критической деградации': self.logic_critical,
+            'Среднее+Отклонение': self.logic_mean_std,
+            'Фазовая группировка': self.logic_classification
         }
         
         stats = {k: {'totals': [], 'dynamics_sum': np.zeros(self.n)} for k in strategies}
@@ -246,15 +246,15 @@ class StrategyHelpWindow(ctk.CTkToplevel):
             "партии с наихудшей лежкостью, независимо от текущей сахаристости.\n"
             "Эффективна при сильной вариабельности сохранности партий.\n\n"
             
-            "7. СТРАТЕГИЯ КРИТИЧЕСКОГО ОТНОШЕНИЯ\n"
+            "7. СТРАТЕГИЯ КРИТИЧЕСКОЙ ДЕГРАДАЦИИ (Critical Ratio)\n"
             "Максимизирует отношение сахаристость/коэффициент деградации.\n"
             "Приоритетно обрабатывает партии с высокой сахаристостью, но низкой лежкостью.\n\n"
             
-            "8. СТРАТЕГИЯ СЕЛЕКТИВНОГО ОТБОРА\n"
+            "8. СРЕДНЕЕ+ОТКЛОНЕНИЕ (Mean+StdDev)\n"
             "Рассматривает только партии с сахаристостью выше среднего + 0.5 стандартных отклонений.\n"
             "Концентрируется на лучшем сырье, игнорируя средние и низкокачественные партии.\n\n"
             
-            "9. МНОГОФАЗНАЯ СТРАТЕГИЯ\n"
+            "9. ФАЗОВАЯ ГРУППИРОВКА (Classification)\n"
             "Разделяет сезон на три фазы с разными алгоритмами:\n"
             "- Начало (30%): бережливая\n"
             "- Середина (40%): CTG\n"
@@ -806,7 +806,7 @@ class FinalApp(ctk.CTk):
                                      command=self.run_process)
         self.btn_run.pack(padx=20, pady=(20, 10), fill="x")
 
-        self.btn_view_matrix = ctk.CTkButton(self.left_frame, text="ПОКАЗАТЬ МАТРИЦУ (LAST)", 
+        self.btn_view_matrix = ctk.CTkButton(self.left_frame, text="ПОКАЗАТЬ МАТРИЦУ (последнюю)", 
                                              height=40, fg_color="#555", state="disabled", font=("Arial", 12, "bold"),
                                              command=self.open_matrix_window)
         self.btn_view_matrix.pack(padx=20, pady=(0, 20), fill="x")
@@ -818,16 +818,16 @@ class FinalApp(ctk.CTk):
         self.right_frame.grid_rowconfigure(2, weight=1)
 
         # KPI
-        self.card_ideal = InfoCard(self.right_frame, "Max Possible Yield", "---", color="#2ec4b6")
+        self.card_ideal = InfoCard(self.right_frame, "Максимально возможный урожай", "---", color="#2ec4b6")
         self.card_ideal.grid(row=0, column=0, sticky="ew", padx=5, pady=(0, 10))
         
         # НОВАЯ КАРТОЧКА MIN
-        self.card_min = InfoCard(self.right_frame, "Min Possible Yield", "---", color="#e63946")
+        self.card_min = InfoCard(self.right_frame, "Минимально возможный урожай", "---", color="#e63946")
         self.card_min.grid(row=0, column=1, sticky="ew", padx=5, pady=(0, 10))
         
-        self.card_best = InfoCard(self.right_frame, "Best Strategy", "---", color="#e76f51")
+        self.card_best = InfoCard(self.right_frame, "Лучшая стратегия", "---", color="#e76f51")
         self.card_best.grid(row=0, column=2, sticky="ew", padx=5, pady=(0, 10))
-        self.card_loss = InfoCard(self.right_frame, "Min Loss", "--- %", color="#e9c46a")
+        self.card_loss = InfoCard(self.right_frame, "Минимальное отклонение", "--- %", color="#e9c46a")
         self.card_loss.grid(row=0, column=3, sticky="ew", padx=5, pady=(0, 10))
 
         # --- Панель управления графиками ---
@@ -1017,22 +1017,22 @@ class FinalApp(ctk.CTk):
         
         # Лаконичные, но содержательные выводы
         analysis_dict = {
-            "Greedy": (
+            "Жадная": (
                 "Данные показывают преобладание процессов увядания.\n"
                 "Оптимальна стратегия немедленной переработки сырья с максимальной сахаристостью."
             ),
             
-            "Thrifty": (
+            "Бережливая": (
                 "Наблюдается выраженный эффект дозаривания.\n"
                 "Рекомендуется отложенная переработка для накопления потенциала."
             ),
             
-            "Thrifty->Greedy": (
+            "Бережливая/Жадная": (
                 "Процесс демонстрирует двухфазную динамику.\n"
                 "Эффективна стратегия накопления с последующим активным сбором."
             ),
             
-            "Greedy->Thrifty": (
+            "Жадная/Бережливая": (
                 "Начальное качество имеет критическое значение.\n"
                 "Первоочередная переработка лучшего сырья экономически оправдана."
             ),
@@ -1042,22 +1042,22 @@ class FinalApp(ctk.CTk):
                 "Стратегия с промежуточным выбором обеспечивает оптимальный компромисс."
             ),
             
-            "CTG (BetaSort)": (
+            "CTG (Сортировка по лежкости)": (
                 "Ключевой фактор - вариабельность сохранности партий.\n"
                 "Приоритет должен отдаваться партиям с наихудшей лежкостью."
             ),
             
-            "Critical Ratio": (
+            "Критической деградации": (
                 "Выявлены партии с особыми характеристиками сохранности.\n"
                 "Эффективен подход, учитывающий как текущее качество, так и скорость деградации."
             ),
             
-            "Mean+StdDev": (
+            "Среднее+Отклонение": (
                 "Качество сырья имеет выраженную неоднородность.\n"
                 "Концентрация на лучшей части партий максимизирует выход продукции."
             ),
             
-            "Classification": (
+            "Фазовая группировка": (
                 "Динамика процесса изменяется в течение сезона.\n"
                 "Адаптивная стратегия с разными подходами на разных этапах оптимальна."
             )
@@ -1124,10 +1124,10 @@ class FinalApp(ctk.CTk):
         x_vals = [s * scale_x for s in steps]
         
         y_ideal = np.cumsum(stats['Ideal']['dynamics_sum']/runs) * scale_y
-        ax1.plot(x_vals, y_ideal, 'w--', label='Ideal', alpha=0.5)
+        ax1.plot(x_vals, y_ideal, 'w--', label='Максимум', alpha=0.5)
 
         y_min = np.cumsum(stats['Min']['dynamics_sum']/runs) * scale_y
-        ax1.plot(x_vals, y_min, 'r--', label='Min (Worst)', alpha=0.5, linewidth=2)
+        ax1.plot(x_vals, y_min, 'r--', label='Минимум', alpha=0.5, linewidth=2)
         
         # Сортируем стратегии (исключая Ideal и Min)
         strategy_names = [k for k in stats if k not in ['Ideal', 'Min']]
@@ -1149,8 +1149,8 @@ class FinalApp(ctk.CTk):
         ax1.legend(facecolor='#2b2b2b', labelcolor='white')
         ax1.tick_params(colors='white'); [s.set_color('white') for s in ax1.spines.values()]
         
-        x_label = "Days (Real Time)" if use_real else "Steps (Matrix Col)"
-        y_label = "Cumulative Yield (Tons)" if use_real else "Cumulative Yield (Fraction Units)"
+        x_label = "Дни" if use_real else "Этапы (Столбцы Матрицы)"
+        y_label = "Совокупный урожай (тонны)" if use_real else "Совокупный урожай (дробные единицы)"
         ax1.set_xlabel(x_label, color='white', fontsize=9)
         ax1.set_ylabel(y_label, color='white', fontsize=9)
         

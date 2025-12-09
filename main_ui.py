@@ -14,19 +14,22 @@ from tkinter import ttk, messagebox
 class SugarBeetModel:
     def __init__(self):
         self.n = 15
-        self.nu = 10
+        self.nu = 7
         self.use_ripening = True
         self.use_chemistry = True
         self.distribution_type = 'concentrated'
         
         # Параметры масштабирования (ТЗ)
-        self.daily_mass = 3000.0  # Тонн в сутки
-        self.days_per_stage = 7.0  # Дней в одном этапе (неделя)
+        self.daily_mass = 3000.0
+        self.days_per_stage = 7.0
         
         self.matrix_s = None
-        self.matrix_beta_avg = None 
+        self.matrix_beta_avg = None # Используется для стратегий (CTG) как основной показатель качества
         
-        # Диапазоны (ТЗ)
+        # Храним центры отдельно для разных фаз
+        self.centers_wither = None
+        self.centers_ripen = None
+        
         self.ranges = {
             'a': (0.12, 0.22), 
             'beta_wither': (0.85, 1.00),
@@ -37,35 +40,34 @@ class SugarBeetModel:
             'I0': (0.62, 0.64)
         }
 
-    def _get_beta(self, stage_idx, row_idx, row_centers):
+    def _get_beta(self, stage_idx, row_idx):
         limit = self.nu if self.use_ripening else 0
         
+        # 1. ОПРЕДЕЛЯЕМ ФАЗУ И НУЖНЫЙ ЦЕНТР
         if stage_idx < limit:
-            # Этап дозаривания
+            # Фаза дозаривания
             bounds = self.ranges['beta_ripen']
-            low, high = bounds
-            
-            if self.distribution_type == 'uniform':
-                return np.random.uniform(low, high)
-            elif self.distribution_type == 'concentrated':
-                # Генерируем центры в правильном диапазоне для дозаривания
-                if not hasattr(self, 'row_centers_ripen'):
-                    self.row_centers_ripen = np.random.uniform(low, high, self.n)
-                center = self.row_centers_ripen[row_idx]
-                delta = abs(high - low) / 4.0
-                return np.random.uniform(max(low, center - delta), min(high, center + delta))
+            # Берем "генетический" центр роста этой партии
+            center = self.centers_ripen[row_idx]
         else:
-            # Этап увядания
+            # Фаза увядания
             bounds = self.ranges['beta_wither']
-            low, high = bounds
+            # Берем "генетический" центр гниения этой партии
+            center = self.centers_wither[row_idx]
             
-            if self.distribution_type == 'uniform':
+        low, high = bounds
+        
+        if self.distribution_type == 'uniform':
+            return np.random.uniform(low, high)
+            
+        elif self.distribution_type == 'concentrated':
+            # Защита: если центр вдруг не попал в границы (маловероятно при правильной генерации)
+            if not (low <= center <= high): 
                 return np.random.uniform(low, high)
-            elif self.distribution_type == 'concentrated':
-                # Используем существующие центры для увядания
-                center = row_centers[row_idx]
-                delta = abs(high - low) / 4.0
-                return np.random.uniform(max(low, center - delta), min(high, center + delta))
+            
+            # Генерируем в узкой окрестности (delta) вокруг центра партии
+            delta = abs(high - low) / 4.0
+            return np.random.uniform(max(low, center - delta), min(high, center + delta))
         
         return 1.0
 
@@ -80,8 +82,12 @@ class SugarBeetModel:
         N = np.random.uniform(*r['N'], self.n)
         I0 = np.random.uniform(*r['I0'], self.n)
         
-        row_centers = np.random.uniform(r['beta_wither'][0], r['beta_wither'][1], self.n)
-        self.matrix_beta_avg = row_centers
+        # --- Генерируем центры для ОБЕИХ фаз ---
+        self.centers_wither = np.random.uniform(r['beta_wither'][0], r['beta_wither'][1], self.n)
+        self.centers_ripen = np.random.uniform(r['beta_ripen'][0], r['beta_ripen'][1], self.n)
+        
+        # Для стратегии CTG (сортировка по лежкости) главным показателем считаем увядание
+        self.matrix_beta_avg = self.centers_wither
 
         for j in range(self.n): 
             days_passed = j * self.days_per_stage
@@ -89,7 +95,7 @@ class SugarBeetModel:
             for i in range(self.n): 
                 beta = 1.0
                 if j > 0:
-                    beta = self._get_beta(j, i, row_centers)
+                    beta = self._get_beta(j, i)
                 
                 if j == 0:
                     C_fraction[i, j] = a[i]
@@ -108,6 +114,16 @@ class SugarBeetModel:
                 S_fraction[i, j] = max(0.0, S_percent / 100.0)
                 
         self.matrix_s = S_fraction
+
+    def set_manual_matrix(self, matrix, manual_nu):
+        self.matrix_s = np.array(matrix)
+        self.n = self.matrix_s.shape[0]
+        self.nu = manual_nu
+        
+        # Генерируем заглушки для ручного режима, чтобы стратегии не падали
+        rng = np.random.RandomState(42)
+        self.centers_wither = rng.uniform(0.9, 0.98, self.n)
+        self.matrix_beta_avg = self.centers_wither # Для CTG
 
     def set_manual_matrix(self, matrix, manual_nu):
         self.matrix_s = np.array(matrix)
@@ -405,7 +421,7 @@ class AutoSettingsFrame(ctk.CTkScrollableFrame):
                 # Проверка на соответствие глобальным границам ТЗ
                 min_allowed, max_allowed, name = LIMITS[k]
                 
-                # Если введенный пользователем диапазон выходит за рамки ТЗ
+                # Если введенный пользователем диапазон выходит за рамки ТЗ 
                 if v1 < min_allowed or v2 > max_allowed:
                     errors.append(f"{name}: Допустимо от {min_allowed} до {max_allowed}")
                 

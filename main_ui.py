@@ -936,7 +936,7 @@ class FinalApp(ctk.CTk):
         if use_real:
             # Масштабируем: Yield (unit) * Mass * Days
             factor = self.model.daily_mass * self.model.days_per_stage
-            unit = " T"
+            unit = " тонн"
         
         scaled_ideal = ideal_val * factor
         scaled_min = min_val * factor
@@ -1066,24 +1066,7 @@ class FinalApp(ctk.CTk):
         # Практические указания
         if name in analysis_dict:
             recommendation_text += "АНАЛИЗ:\n" + analysis_dict[name] + "\n\n"
-        
-        recommendation_text += "ПРАКТИЧЕСКИЕ УКАЗАНИЯ:\n"
-        
-        # Общие для всех стратегий
-        common_actions = [
-            "Регулярно контролируйте актуальные показатели сахаристости",
-            "Корректируйте планы при изменении внешних условий",
-            "Документируйте принятые решения для последующего анализа"
-        ]
-        
-        if manual_mode:
-            recommendation_text += "Анализ выполнен для предоставленной матрицы данных.\n"
-        else:
-            recommendation_text += "Выводы основаны на статистической обработке результатов моделирования.\n"
-        
-        for action in common_actions:
-            recommendation_text += f"• {action}\n"
-        
+             
         self.lbl_rec.configure(text=recommendation_text)
 
     def draw_graphs(self, stats, runs):

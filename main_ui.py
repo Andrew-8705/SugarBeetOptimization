@@ -340,8 +340,29 @@ class AutoSettingsFrame(ctk.CTkScrollableFrame):
                 'ranges': {}
             }
             
-            # --- ВАЛИДАЦИЯ ---
-            # Определяем допустимые границы согласно ТЗ
+            errors = []
+            
+            # --- ШАГ 1: Проверка n ---
+            if vals['n'] <= 0:
+                errors.append(f"N (кол-во партий): должно быть > 0")
+            
+            # --- ШАГ 2: Проверка Nu (только если n корректно) ---
+            max_nu = vals['n']  # максимальное значение для Nu
+            if vals['nu'] <= 0:
+                errors.append(f"Nu (день переключения): должно быть > 0. Максимум: {max_nu}")
+            elif vals['nu'] > vals['n']:
+                errors.append(f"Nu (день переключения): не может быть больше N={vals['n']}. Максимум: {max_nu}")
+            
+            # --- ШАГ 3: Проверка k (только если n и nu корректны) ---
+            # k может быть от 1 до (n - nu + 1), но проверяем только если n и nu валидны
+            if vals['n'] > 0 and 0 < vals['nu'] <= vals['n']:
+                max_k = max(1, vals['n'] - vals['nu'] + 1) if vals['nu'] <= vals['n'] else vals['n']
+                if vals['k_param'] < 1:
+                    errors.append(f"k (для стратегии БkЖ): должно быть ≥ 1. Максимум: {max_k}")
+                elif vals['k_param'] > max_k:
+                    errors.append(f"k (для стратегии БkЖ): должно быть ≤ {max_k} (n - nu + 1 = {vals['n']} - {vals['nu']} + 1)")
+            
+            # --- Валидация диапазонов параметров ---
             LIMITS = {
                 'a': (0.12, 0.22, "Сахар (доли)"),
                 'beta_wither': (0.85, 1.00, "Увядание"),
@@ -350,8 +371,6 @@ class AutoSettingsFrame(ctk.CTkScrollableFrame):
                 'Na': (0.21, 0.82, "Натрий"),
                 'N': (1.58, 2.80, "Азот")
             }
-            
-            errors = []
             
             # Сбор, валидация и проверка диапазонов
             for k in ['a', 'beta_wither', 'beta_ripen', 'K', 'Na', 'N']:
@@ -369,7 +388,6 @@ class AutoSettingsFrame(ctk.CTkScrollableFrame):
                 min_allowed, max_allowed, name = LIMITS[k]
                 
                 # Если введенный пользователем диапазон выходит за рамки ТЗ
-                # (допускаем небольшую погрешность float, но в целом строго)
                 if v1 < min_allowed or v2 > max_allowed:
                     errors.append(f"{name}: Допустимо от {min_allowed} до {max_allowed}")
                 
@@ -380,15 +398,9 @@ class AutoSettingsFrame(ctk.CTkScrollableFrame):
                 errors.append("Тонн в сутки: должно быть число > 0")
             if vals['days_per_stage'] <= 0:
                 errors.append("Дней в этапе: должно быть число > 0")
-            if vals['n'] <= 0:
-                errors.append("N (кол-во партий): должно быть > 0")
             if vals['runs'] <= 0:
                 errors.append("Число прогонов: должно быть > 0")
-            if vals['k_param'] < 1:
-                errors.append("k должен быть ≥ 1")
-            elif vals['k_param'] > vals['n'] - vals['nu'] + 1:
-                errors.append(f"k должен быть ≤ {vals['n'] - vals['nu'] + 1} (n - nu + 1)")    
-
+            
             # Если есть ошибки, выводим предупреждение и не возвращаем параметры
             if errors:
                 error_msg = "Обнаружены некорректные данные:\n\n" + "\n".join(errors)
@@ -473,30 +485,57 @@ class ManualSettingsFrame(ctk.CTkFrame):
             return None, None, None, None
         
         try:
-            # Обработка nu
+            current_size = self.current_size
+            errors = []
+            
+            # --- ШАГ 1: Проверка Nu ---
             try:
                 nu = int(self.entry_nu.get())
+                max_nu = current_size
+                
                 if nu <= 0:
-                    nu = 2
-                    messagebox.showwarning("Коррекция Nu", "Nu должен быть > 0. Установлено в 2")
-                elif nu > self.current_size:
-                    nu = self.current_size
-                    messagebox.showwarning("Коррекция Nu", f"Nu не может быть больше N={self.current_size}. Установлено в {self.current_size}")
+                    errors.append(f"Nu: должно быть > 0. Максимум: {max_nu}")
+                elif nu > current_size:
+                    errors.append(f"Nu: не может быть больше N={current_size}.")
+                else:
+                    # Если Nu корректно, сохраняем его
+                    pass
             except ValueError:
-                nu = 2
-                messagebox.showwarning("Ошибка", "Nu установлен в 2 (значение по умолчанию)")
+                errors.append("Nu: должно быть целым числом")
+                nu = None
             
-            # Обработка k
-            try:
-                k = int(self.entry_k.get())
-                if k < 1:
-                    k = 1
-                    messagebox.showwarning("Коррекция k", "k установлен в 1 (минимальное значение)")
-            except ValueError:
-                k = 1
-                messagebox.showwarning("Ошибка", "k установлен в 1 (значение по умолчанию)")
+            # --- ШАГ 2: Проверка k (только если Nu корректно) ---
+            k = None
+            if nu and 0 < nu <= current_size:
+                try:
+                    k = int(self.entry_k.get())
+                    max_k = max(1, current_size - nu + 1) if nu <= current_size else current_size
+                    
+                    if k < 1:
+                        errors.append(f"k: должно быть ≥ 1. Максимум: {max_k}")
+                    elif k > max_k:
+                        errors.append(f"k: должно быть ≤ {max_k} (n - nu + 1 = {current_size} - {nu} + 1)")
+                except ValueError:
+                    errors.append("k: должно быть целым числом")
+                    k = None
             
-            runs = 1 # Фиксировано для ручного режима
+            # Если есть ошибки, показываем их и не возвращаем данные
+            if errors:
+                error_msg = "Обнаружены некорректные данные:\n\n" + "\n".join(errors)
+                messagebox.showwarning("Ошибка параметров", error_msg)
+                return None, None, None, None
+            
+            # Если все ок, устанавливаем значения по умолчанию для некорректных
+            if nu is None:
+                nu = min(2, current_size)  # безопасное значение
+                messagebox.showwarning("Коррекция Nu", f"Nu установлен в {nu} (значение по умолчанию)")
+            
+            if k is None:
+                max_k_safe = max(1, current_size - nu + 1) if nu <= current_size else current_size
+                k = min(1, max_k_safe)  # безопасное значение
+                messagebox.showwarning("Коррекция k", f"k установлен в {k} (минимальное значение)")
+            
+            runs = 1  # Фиксировано для ручного режима
             
             return self.matrix_data, nu, k, runs
             

@@ -39,16 +39,34 @@ class SugarBeetModel:
 
     def _get_beta(self, stage_idx, row_idx, row_centers):
         limit = self.nu if self.use_ripening else 0
-        bounds = self.ranges['beta_ripen'] if stage_idx < limit else self.ranges['beta_wither']
-        low, high = bounds
         
-        if self.distribution_type == 'uniform':
-            return np.random.uniform(low, high)
-        elif self.distribution_type == 'concentrated':
-            center = row_centers[row_idx]
-            if not (low <= center <= high): return np.random.uniform(low, high)
-            delta = abs(high - low) / 4.0
-            return np.random.uniform(max(low, center - delta), min(high, center + delta))
+        if stage_idx < limit:
+            # Этап дозаривания
+            bounds = self.ranges['beta_ripen']
+            low, high = bounds
+            
+            if self.distribution_type == 'uniform':
+                return np.random.uniform(low, high)
+            elif self.distribution_type == 'concentrated':
+                # Генерируем центры в правильном диапазоне для дозаривания
+                if not hasattr(self, 'row_centers_ripen'):
+                    self.row_centers_ripen = np.random.uniform(low, high, self.n)
+                center = self.row_centers_ripen[row_idx]
+                delta = abs(high - low) / 4.0
+                return np.random.uniform(max(low, center - delta), min(high, center + delta))
+        else:
+            # Этап увядания
+            bounds = self.ranges['beta_wither']
+            low, high = bounds
+            
+            if self.distribution_type == 'uniform':
+                return np.random.uniform(low, high)
+            elif self.distribution_type == 'concentrated':
+                # Используем существующие центры для увядания
+                center = row_centers[row_idx]
+                delta = abs(high - low) / 4.0
+                return np.random.uniform(max(low, center - delta), min(high, center + delta))
+        
         return 1.0
 
     def generate_matrix(self):
